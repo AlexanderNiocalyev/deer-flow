@@ -274,7 +274,48 @@ When using Docker development (`make docker-start`), DeerFlow starts the `provis
 
 See [Provisioner Setup Guide](../../docker/provisioner/README.md) for detailed configuration, prerequisites, and troubleshooting.
 
-Choose between local execution or Docker-based isolation:
+**Vercel Sandbox Execution** (runs sandbox workspaces in Vercel Sandbox):
+```yaml
+sandbox:
+   use: deerflow.community.vercel_sandbox:VercelSandboxProvider
+   vercel_token: $VERCEL_TOKEN
+   vercel_project_id: $VERCEL_PROJECT_ID
+   # vercel_team_id: $VERCEL_TEAM_ID
+```
+
+Vercel Sandbox runs only the execution workspace: bash commands, file reads/writes, lightweight
+code execution, and optional preview ports. Keep DeerFlow Gateway, LangGraph runtime, frontend,
+memory, thread store, IM channels, and orchestration in the main DeerFlow service. DeerFlow stores
+its own deterministic per-thread sandbox id and a separate Vercel sandbox id in thread metadata so
+threads can resume persistent Vercel sandboxes across turns without coupling business session ids
+to provider resource ids.
+
+Vercel does not mount DeerFlow's host thread directories. `VercelSandboxProvider` syncs existing
+workspace/uploads into the sandbox on acquire and mirrors writes under `/mnt/user-data/*` back to
+the host thread directory so artifacts and `present_files` continue to work. By default it stops
+the persistent Vercel sandbox after each agent run (`vercel_stop_on_release: true`), letting Vercel
+snapshot the session and reducing idle runtime cost.
+
+Common options:
+
+```yaml
+sandbox:
+  use: deerflow.community.vercel_sandbox:VercelSandboxProvider
+  vercel_token: $VERCEL_TOKEN
+  vercel_project_id: $VERCEL_PROJECT_ID
+  vercel_team_id: $VERCEL_TEAM_ID  # optional
+  vercel_runtime: python3.13
+  vercel_vcpus: 2
+  vercel_memory_mb: 4096           # must equal vercel_vcpus * 2048
+  vercel_timeout_ms: 3600000
+  vercel_ports: [3000]
+  vercel_stop_on_release: true
+  vercel_environment:
+    NODE_ENV: production
+    API_KEY: $MY_API_KEY
+```
+
+Choose between local execution, Docker-based isolation, Kubernetes provisioner, or Vercel Sandbox:
 
 **Option 1: Local Sandbox** (default, simpler setup):
 ```yaml

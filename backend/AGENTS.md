@@ -307,11 +307,12 @@ Proxied through nginx: `/api/langgraph/*` → Gateway LangGraph-compatible runti
 **Implementations**:
 - `LocalSandboxProvider` - Local filesystem execution. `acquire(thread_id)` returns a per-thread `LocalSandbox` (id `local:{thread_id}`) whose `path_mappings` resolve `/mnt/user-data/{workspace,uploads,outputs}` and `/mnt/acp-workspace` to that thread's host directories, so the public `Sandbox` API honours the `/mnt/user-data` contract uniformly with AIO. `acquire()` / `acquire(None)` keeps the legacy generic singleton (id `local`) for callers without a thread context. Per-thread sandboxes are held in an LRU cache (default 256 entries) guarded by a `threading.Lock`.
 - `AioSandboxProvider` (`packages/harness/deerflow/community/`) - Docker-based isolation. Active-cache and warm-pool entries are checked with the backend during acquire/reuse; definitively dead containers are dropped from all in-process maps so the thread can discover or create a fresh sandbox instead of reusing a stale client. Backend health-check failures are treated as unknown, not dead; local discovery likewise treats an unverifiable container as not adoptable and falls through to create rather than failing acquire. `get()` remains an in-memory lookup for event-loop-safe tool paths.
+- `VercelSandboxProvider` (`packages/harness/deerflow/community/vercel_sandbox/`) - Remote Vercel Sandbox execution. DeerFlow uses a deterministic per-thread sandbox id and stores the Vercel sandbox id separately in thread metadata. Acquire creates or resumes the Vercel sandbox, syncs host workspace/uploads into `/mnt/user-data`, and mirrors `/mnt/user-data/*` writes back to the host so `present_files` and artifacts still use the existing host-side delivery path. Release syncs workspace/outputs back, then stops the persistent Vercel sandbox by default so it snapshots while idle. `get()` remains an in-memory lookup; network resume happens in `acquire()`.
 
 **Virtual Path System**:
 - Agent sees: `/mnt/user-data/{workspace,uploads,outputs}`, `/mnt/skills`
 - Physical: `backend/.deer-flow/users/{user_id}/threads/{thread_id}/user-data/...`, `deer-flow/skills/`
-- Translation: `LocalSandboxProvider` builds per-thread `PathMapping`s for the user-data prefixes at acquire time; `tools.py` keeps `replace_virtual_path()` / `replace_virtual_paths_in_command()` as a defense-in-depth layer (and for path validation). AIO has the directories volume-mounted at the same virtual paths inside its container, so both implementations accept `/mnt/user-data/...` natively.
+- Translation: `LocalSandboxProvider` builds per-thread `PathMapping`s for the user-data prefixes at acquire time; `tools.py` keeps `replace_virtual_path()` / `replace_virtual_paths_in_command()` as a defense-in-depth layer (and for path validation). AIO has the directories volume-mounted at the same virtual paths inside its container, so it accepts `/mnt/user-data/...` natively. Vercel does not support these DeerFlow mounts, so the Vercel provider performs explicit sync/mirror around the same virtual paths.
 - Detection: `is_local_sandbox()` accepts both `sandbox_id == "local"` (legacy / no-thread) and `sandbox_id.startswith("local:")` (per-thread)
 
 **Sandbox Tools** (in `packages/harness/deerflow/sandbox/tools.py`):
@@ -351,6 +352,7 @@ Proxied through nginx: `/api/langgraph/*` → Gateway LangGraph-compatible runti
 - `firecrawl/` - Web scraping via Firecrawl API
 - `image_search/` - Image search
 - `aio_sandbox/` - Docker-based isolation (`AioSandboxProvider`)
+- `vercel_sandbox/` - Vercel Sandbox execution (`VercelSandboxProvider`)
 
 Additional providers also live here (`brave`, `browserless`, `ddg_search`, `exa`, `fastcrw`, `groundroute`, `infoquest`, `searxng`, `serper`); see each subpackage for specifics.
 
