@@ -8,6 +8,7 @@ import sqlite3
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from deerflow.utils.time import now_iso as _now_iso
@@ -160,6 +161,43 @@ class RunManager:
         if not run_ids:
             return []
         return [record for run_id in run_ids if (record := self._runs.get(run_id)) is not None]
+
+    @staticmethod
+    def _age_seconds(timestamp: str, now: datetime) -> float | None:
+        if not timestamp:
+            return None
+        try:
+            parsed = datetime.fromisoformat(timestamp)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return max(0.0, (now - parsed.astimezone(UTC)).total_seconds())
+
+    async def capacity_snapshot(self) -> dict[str, Any]:
+        """Return process-local run saturation metrics for routing decisions.
+
+        DeerFlow runs are owned by the gateway process that started their
+        asyncio task. This snapshot intentionally reports only local in-memory
+        runs, because an overflow router needs to know whether *this* origin can
+        accept another run; persisted historical rows are not local capacity.
+        """
+
+        now = datetime.now(UTC)
+        async with self._lock:
+            records = list(self._runs.values())
+            pending = [record for record in records if record.status == RunStatus.pending]
+            active = [record for record in records if record.status == RunStatus.running or record.finalizing]
+            oldest_pending_age = max(
+                (age for record in pending if (age := self._age_seconds(record.created_at, now)) is not None),
+                default=0.0,
+            )
+
+        return {
+            "active_runs": len(active),
+            "pending_runs": len(pending),
+            "oldest_pending_age_seconds": oldest_pending_age,
+        }
 
     @staticmethod
     def _store_put_payload(record: RunRecord, *, error: str | None = None) -> dict[str, Any]:
