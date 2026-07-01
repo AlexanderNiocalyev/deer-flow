@@ -35,6 +35,10 @@ from deerflow.runtime.store._sqlite_utils import ensure_sqlite_parent_dir, resol
 logger = logging.getLogger(__name__)
 
 
+def _is_persistent_database_backend(db_config) -> bool:
+    return getattr(db_config, "backend", None) in {"sqlite", "postgres"}
+
+
 def _prepare_sqlite_checkpointer_path(raw: str) -> str:
     conn_str = resolve_sqlite_conn_str(raw)
     ensure_sqlite_parent_dir(conn_str)
@@ -191,10 +195,10 @@ async def make_checkpointer(app_config: AppConfig | None = None) -> AsyncIterato
 
     # Unified database config
     db_config = getattr(app_config, "database", None)
-    if db_config is not None and db_config.backend != "memory":
+    if _is_persistent_database_backend(db_config):
         async with _async_checkpointer_from_database(db_config) as saver:
             yield saver
-            return
+        return
 
     # Default: in-memory
     from langgraph.checkpoint.memory import InMemorySaver
