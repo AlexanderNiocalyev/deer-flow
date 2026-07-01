@@ -105,12 +105,20 @@ def test_gateway_cors_configuration_uses_gateway_allowlist():
     assert "GATEWAY_CORS_ORIGINS" in csrf_middleware
 
 
-def test_frontend_rewrites_langgraph_prefix_to_gateway():
+def test_frontend_proxies_gateway_api_with_runtime_route_handlers():
     next_config = _read("frontend/next.config.js")
+    proxy = _read("frontend/src/app/api/_gateway-proxy.ts")
+    api_route = _read("frontend/src/app/api/[...path]/route.ts")
+    langgraph_route = _read("frontend/src/app/api/langgraph/[...path]/route.ts")
     api_client = _read("frontend/src/core/api/api-client.ts")
 
+    assert "async rewrites()" not in next_config
+    assert "http://127.0.0.1:8001" not in next_config
     assert "DEER_FLOW_INTERNAL_LANGGRAPH_BASE_URL" not in next_config
     assert "http://127.0.0.1:2024" not in next_config
+    assert "DEER_FLOW_INTERNAL_GATEWAY_BASE_URL" in proxy
+    assert 'return `/api/${path.join("/")}`;' in api_route
+    assert 'return `/api/${path.join("/")}`;' in langgraph_route
     assert "langgraph-compat" not in api_client
 
 
