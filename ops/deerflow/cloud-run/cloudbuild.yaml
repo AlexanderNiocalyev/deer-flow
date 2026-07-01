@@ -5,6 +5,8 @@ substitutions:
 steps:
   - name: gcr.io/cloud-builders/docker
     id: build-backend
+    env:
+      - DOCKER_BUILDKIT=1
     args:
       - build
       - -f
@@ -22,6 +24,8 @@ steps:
 
   - name: gcr.io/cloud-builders/docker
     id: build-frontend
+    env:
+      - DOCKER_BUILDKIT=1
     args:
       - build
       - -f
