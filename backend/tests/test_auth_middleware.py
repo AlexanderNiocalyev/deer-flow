@@ -189,21 +189,30 @@ def _make_auth_csrf_app():
     return app
 
 
-def _embed_token(thread_id: str, *, user_id: str = "orpheus-user", secret: str = "embed-test-secret") -> str:
-    return create_embed_token(
-        {
-            "v": 1,
-            "iss": "orpheus",
-            "aud": "deerflow",
-            "sub": user_id,
-            "thread_id": thread_id,
-            "session_id": "agws_test",
-            "workspace_id": "workspace_test",
-            "iat": 1_700_000_000,
-            "exp": 4_000_000_000,
-        },
-        secret=secret,
-    )
+def _embed_token(
+    thread_id: str,
+    *,
+    user_id: str = "orpheus-user",
+    secret: str = "embed-test-secret",
+    workspace_scoped: bool = True,
+) -> str:
+    payload = {
+        "v": 1,
+        "iss": "orpheus",
+        "aud": "deerflow",
+        "sub": user_id,
+        "thread_id": thread_id,
+        "iat": 1_700_000_000,
+        "exp": 4_000_000_000,
+    }
+    if workspace_scoped:
+        payload.update(
+            {
+                "session_id": "agws_test",
+                "workspace_id": "workspace_test",
+            }
+        )
+    return create_embed_token(payload, secret=secret)
 
 
 @pytest.fixture
@@ -420,13 +429,25 @@ def test_protected_path_with_embed_token_stamps_user(monkeypatch):
     }
 
 
-def test_protected_path_rejects_embed_token_for_wrong_thread(monkeypatch):
+def test_protected_path_allows_workspace_embed_token_for_new_thread(monkeypatch):
     monkeypatch.setenv("DEERFLOW_EMBED_TOKEN_SECRET", "embed-test-secret")
     client = TestClient(_make_app())
 
     res = client.post(
         "/api/threads/abc/runs/stream",
         headers={EMBED_AUTH_HEADER_NAME: _embed_token("other-thread")},
+    )
+
+    assert res.status_code == 200
+
+
+def test_protected_path_rejects_legacy_embed_token_for_wrong_thread(monkeypatch):
+    monkeypatch.setenv("DEERFLOW_EMBED_TOKEN_SECRET", "embed-test-secret")
+    client = TestClient(_make_app())
+
+    res = client.post(
+        "/api/threads/abc/runs/stream",
+        headers={EMBED_AUTH_HEADER_NAME: _embed_token("other-thread", workspace_scoped=False)},
     )
 
     assert res.status_code == 401

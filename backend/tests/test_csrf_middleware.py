@@ -7,21 +7,29 @@ from app.gateway.csrf_middleware import CSRFMiddleware
 from app.gateway.embed_auth import EMBED_AUTH_HEADER_NAME, create_embed_token
 
 
-def _embed_token(thread_id: str, *, secret: str = "embed-test-secret") -> str:
-    return create_embed_token(
-        {
-            "v": 1,
-            "iss": "orpheus",
-            "aud": "deerflow",
-            "sub": "orpheus-user",
-            "thread_id": thread_id,
-            "session_id": "agws_test",
-            "workspace_id": "workspace_test",
-            "iat": 1_700_000_000,
-            "exp": 4_000_000_000,
-        },
-        secret=secret,
-    )
+def _embed_token(
+    thread_id: str,
+    *,
+    secret: str = "embed-test-secret",
+    workspace_scoped: bool = True,
+) -> str:
+    payload = {
+        "v": 1,
+        "iss": "orpheus",
+        "aud": "deerflow",
+        "sub": "orpheus-user",
+        "thread_id": thread_id,
+        "iat": 1_700_000_000,
+        "exp": 4_000_000_000,
+    }
+    if workspace_scoped:
+        payload.update(
+            {
+                "session_id": "agws_test",
+                "workspace_id": "workspace_test",
+            }
+        )
+    return create_embed_token(payload, secret=secret)
 
 
 def _make_app() -> FastAPI:
@@ -252,7 +260,7 @@ def test_non_auth_mutation_allows_valid_embed_token_without_csrf(monkeypatch):
     assert response.status_code == 200
 
 
-def test_non_auth_mutation_rejects_invalid_embed_token(monkeypatch):
+def test_non_auth_mutation_allows_workspace_embed_token_for_new_thread(monkeypatch):
     monkeypatch.setenv("DEERFLOW_EMBED_TOKEN_SECRET", "embed-test-secret")
     client = TestClient(_make_app(), base_url="https://deerflow.example")
 
@@ -261,6 +269,21 @@ def test_non_auth_mutation_rejects_invalid_embed_token(monkeypatch):
         headers={
             "Origin": "https://deerflow.example",
             EMBED_AUTH_HEADER_NAME: _embed_token("other-thread"),
+        },
+    )
+
+    assert response.status_code == 200
+
+
+def test_non_auth_mutation_rejects_legacy_embed_token_for_wrong_thread(monkeypatch):
+    monkeypatch.setenv("DEERFLOW_EMBED_TOKEN_SECRET", "embed-test-secret")
+    client = TestClient(_make_app(), base_url="https://deerflow.example")
+
+    response = client.post(
+        "/api/threads/abc/runs/stream",
+        headers={
+            "Origin": "https://deerflow.example",
+            EMBED_AUTH_HEADER_NAME: _embed_token("other-thread", workspace_scoped=False),
         },
     )
 

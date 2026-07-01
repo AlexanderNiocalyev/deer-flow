@@ -22,6 +22,7 @@ import { ThreadTitle } from "@/components/workspace/thread-title";
 import { TodoList } from "@/components/workspace/todo-list";
 import { TokenUsageIndicator } from "@/components/workspace/token-usage-indicator";
 import { Welcome } from "@/components/workspace/welcome";
+import { hasEmbedToken } from "@/core/embed-auth";
 import { useI18n } from "@/core/i18n/hooks";
 import { useModels } from "@/core/models/hooks";
 import { useNotification } from "@/core/notification/hooks";
@@ -123,6 +124,9 @@ export default function ChatPage() {
   const hasThreadMessages = thread.messages.length > 0;
 
   useEffect(() => {
+    if (hasEmbedToken()) {
+      return;
+    }
     if (
       !isNewThread &&
       !isMock &&

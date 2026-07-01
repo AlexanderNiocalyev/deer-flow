@@ -37,6 +37,18 @@ class EmbedTokenPayload:
     exp: int
     iat: int
 
+    @property
+    def is_workspace_scoped(self) -> bool:
+        """Whether this token can operate the full DeerFlow workspace UI.
+
+        Early Orpheus embeds were single-thread iframes. The full native
+        workspace opens the DeerFlow app directly, where users can create
+        fresh chat ids client-side before the backend sees a thread row. Those
+        tokens carry the Orpheus agent session and workspace ids, so they are
+        scoped by authenticated embed user instead of one fixed thread path.
+        """
+        return bool(self.session_id and self.workspace_id)
+
 
 def _base64_url_decode(value: str) -> bytes:
     padding = "=" * (-len(value) % 4)
@@ -140,7 +152,7 @@ def _thread_id_from_path(path: str) -> str | None:
 def verify_embed_request(request: Request) -> EmbedTokenPayload:
     payload = verify_embed_token(request.headers.get(EMBED_AUTH_HEADER_NAME))
     path_thread_id = _thread_id_from_path(request.url.path)
-    if path_thread_id is not None and path_thread_id != payload.thread_id:
+    if path_thread_id is not None and path_thread_id != payload.thread_id and not payload.is_workspace_scoped:
         raise EmbedTokenError("Embed token is not valid for this thread")
     return payload
 
