@@ -251,6 +251,91 @@ def test_vercel_provider_uses_database_record_store_when_configured(tmp_path, mo
         asyncio.run(close_engine())
 
 
+def test_vercel_provider_releases_thread_from_database_record_after_restart(tmp_path, monkeypatch):
+    import deerflow.community.vercel_sandbox.vercel_sandbox as sandbox_mod
+    import deerflow.community.vercel_sandbox.vercel_sandbox_provider as provider_mod
+    from deerflow.persistence.engine import close_engine, get_session_factory, init_engine
+
+    async def load_binding(sandbox_id: str) -> RuntimeBindingRow | None:
+        sf = get_session_factory()
+        async with sf() as session:
+            return await session.get(RuntimeBindingRow, f"vercel:{sandbox_id}")
+
+    asyncio.run(close_engine())
+    asyncio.run(
+        init_engine(
+            "sqlite",
+            url=f"sqlite+aiosqlite:///{tmp_path / 'release.db'}",
+            sqlite_dir=str(tmp_path),
+        )
+    )
+
+    try:
+        paths = Paths(base_dir=tmp_path)
+        paths.ensure_thread_dirs("thread-release", user_id="user-release")
+
+        sandbox_cfg = SimpleNamespace(
+            environment={},
+            vercel_environment={},
+            vercel_vcpus=2,
+            vercel_memory_mb=4096,
+            vercel_runtime="python3.13",
+            vercel_stop_on_release=True,
+            vercel_record_store="database",
+        )
+        monkeypatch.setattr(provider_mod, "get_app_config", lambda: SimpleNamespace(sandbox=sandbox_cfg))
+        monkeypatch.setattr(provider_mod, "get_paths", lambda: paths)
+        monkeypatch.setattr(sandbox_mod, "get_paths", lambda: paths)
+        monkeypatch.setattr(provider_mod.VercelSandboxProvider, "_register_signal_handlers", lambda self: None)
+
+        remote_clients: dict[str, FakeVercelClient] = {}
+        created: list[str] = []
+        resumed: list[str] = []
+
+        def fake_create(self):
+            remote_id = f"sbx_{len(created) + 1}"
+            created.append(remote_id)
+            client = FakeVercelClient(remote_id)
+            remote_clients[remote_id] = client
+            return client
+
+        def fake_get(self, vercel_sandbox_id: str):
+            resumed.append(vercel_sandbox_id)
+            return remote_clients[vercel_sandbox_id]
+
+        monkeypatch.setattr(provider_mod.VercelSandboxProvider, "_create_vercel_sandbox", fake_create)
+        monkeypatch.setattr(provider_mod.VercelSandboxProvider, "_get_vercel_sandbox", fake_get)
+
+        provider = provider_mod.VercelSandboxProvider()
+        sandbox_id = provider.acquire("thread-release", user_id="user-release")
+        remote_clients["sbx_1"].files["/mnt/user-data/outputs/report.md"] = b"released"
+        provider.reset()
+
+        # Simulate a Cloud Run restart: the new provider has no in-process
+        # sandbox cache but can still use the DB-backed binding.
+        restarted_provider = provider_mod.VercelSandboxProvider()
+        result = restarted_provider.release_thread(
+            "thread-release",
+            user_id="user-release",
+            reason="idle_reaper",
+        )
+
+        assert result["status"] == "released"
+        assert result["sandbox_id"] == sandbox_id
+        assert result["vercel_sandbox_id"] == "sbx_1"
+        assert created == ["sbx_1"]
+        assert resumed == ["sbx_1"]
+        assert remote_clients["sbx_1"].stopped is True
+        assert (paths.sandbox_outputs_dir("thread-release", user_id="user-release") / "report.md").read_text(encoding="utf-8") == "released"
+
+        binding = asyncio.run(load_binding(sandbox_id))
+        assert binding is not None
+        assert binding.status == "stopped"
+        assert binding.stopped_at is not None
+    finally:
+        asyncio.run(close_engine())
+
+
 def test_database_record_store_claim_has_single_owner(tmp_path):
     from deerflow.persistence.engine import close_engine, get_session_factory, init_engine
 

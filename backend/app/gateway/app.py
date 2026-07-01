@@ -23,6 +23,7 @@ from app.gateway.routers import (
     memory,
     models,
     runs,
+    runtime_lifecycle,
     skills,
     suggestions,
     thread_runs,
@@ -383,6 +384,9 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
 
     # Thread cleanup API is mounted at /api/threads/{thread_id}
     app.include_router(threads.router)
+
+    # Internal runtime lifecycle API is mounted at /api/internal/runtime
+    app.include_router(runtime_lifecycle.router)
 
     # Agents API is mounted at /api/agents
     app.include_router(agents.router)

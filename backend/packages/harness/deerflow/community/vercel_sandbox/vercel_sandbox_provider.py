@@ -223,6 +223,32 @@ class VercelSandboxProvider(SandboxProvider):
         if record is not None:
             self._delete_record(record)
 
+    def release_thread(self, thread_id: str, *, user_id: str | None = None, reason: str | None = None) -> dict[str, Any]:
+        """Release the Vercel sandbox associated with a DeerFlow thread.
+
+        This is used by production lifecycle controllers such as Orpheus' idle
+        reaper. It deliberately does not call ``acquire``: lifecycle cleanup
+        must never create a fresh remote sandbox just to stop it.
+        """
+        effective_user_id = self._effective_acquire_user_id(user_id)
+        sandbox_id = self._sandbox_id_for_thread(thread_id, effective_user_id)
+        thread_lock = self._get_thread_lock(thread_id, effective_user_id)
+        with thread_lock:
+            paths = get_paths()
+            paths.ensure_thread_dirs(thread_id, user_id=effective_user_id)
+            lock_path = paths.thread_dir(thread_id, user_id=effective_user_id) / f"{sandbox_id}.vercel.lock"
+            with open(lock_path, "a", encoding="utf-8") as lock_file:
+                _lock_file_exclusive(lock_file)
+                try:
+                    return self._release_thread_locked(
+                        thread_id,
+                        sandbox_id,
+                        user_id=effective_user_id,
+                        reason=reason,
+                    )
+                finally:
+                    _unlock_file(lock_file)
+
     def shutdown(self) -> None:
         with self._lock:
             if self._shutdown_called:
@@ -466,6 +492,92 @@ class VercelSandboxProvider(SandboxProvider):
             project_id=self._config["project_id"],
             team_id=self._config["team_id"],
         )
+
+    def _release_thread_locked(
+        self,
+        thread_id: str,
+        sandbox_id: str,
+        *,
+        user_id: str,
+        reason: str | None,
+    ) -> dict[str, Any]:
+        with self._lock:
+            active_sandbox = self._sandboxes.get(sandbox_id)
+
+        if active_sandbox is not None:
+            self.release(sandbox_id)
+            return {
+                "status": "released",
+                "provider": "vercel",
+                "thread_id": thread_id,
+                "sandbox_id": sandbox_id,
+                "message": "Active Vercel sandbox released.",
+                "reason": reason,
+            }
+
+        record = self._load_record(thread_id, user_id, sandbox_id)
+        if record is None:
+            return {
+                "status": "not_found",
+                "provider": "vercel",
+                "thread_id": thread_id,
+                "sandbox_id": sandbox_id,
+                "message": "No Vercel sandbox record exists for this thread.",
+                "reason": reason,
+            }
+
+        if not record.vercel_sandbox_id:
+            return {
+                "status": "creating",
+                "provider": "vercel",
+                "thread_id": thread_id,
+                "sandbox_id": sandbox_id,
+                "message": "Vercel sandbox creation is still claimed by another worker.",
+                "reason": reason,
+            }
+
+        if record.status == "stopped":
+            return {
+                "status": "already_stopped",
+                "provider": "vercel",
+                "thread_id": thread_id,
+                "sandbox_id": sandbox_id,
+                "vercel_sandbox_id": record.vercel_sandbox_id,
+                "message": "Vercel sandbox is already stopped.",
+                "reason": reason,
+            }
+
+        client = self._get_vercel_sandbox(record.vercel_sandbox_id)
+        sandbox = VercelSandbox(
+            id=sandbox_id,
+            client=client,
+            thread_id=thread_id,
+            user_id=user_id,
+            paths=get_paths(),
+            max_sync_file_bytes=self._config["max_sync_file_bytes"],
+        )
+        try:
+            try:
+                sandbox.sync_to_host()
+            except Exception as exc:
+                logger.warning("Failed to sync Vercel sandbox %s during thread release: %s", sandbox_id, exc)
+
+            sandbox.stop(blocking=False)
+            record.status = "stopped"
+            record.stopped_at = time.time()
+            record.last_active_at = time.time()
+            self._persist_record(record)
+            return {
+                "status": "released",
+                "provider": "vercel",
+                "thread_id": thread_id,
+                "sandbox_id": sandbox_id,
+                "vercel_sandbox_id": record.vercel_sandbox_id,
+                "message": "Recorded Vercel sandbox stopped.",
+                "reason": reason,
+            }
+        finally:
+            sandbox.close()
 
     @staticmethod
     def _remote_sandbox_id(client: Any) -> str:
