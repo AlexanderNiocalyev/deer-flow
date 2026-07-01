@@ -1,4 +1,11 @@
-import { afterEach, beforeEach, describe, expect, test, rs } from "@rstest/core";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  test,
+  rs,
+} from "@rstest/core";
 
 import { buildGatewayURL, proxyGatewayRequest } from "@/app/api/_gateway-proxy";
 
@@ -56,7 +63,9 @@ describe("gateway proxy", () => {
       "/api/threads/t1",
     );
 
-    expect(url.toString()).toBe("https://gw.example.com/api/threads/t1?embed=1");
+    expect(url.toString()).toBe(
+      "https://gw.example.com/api/threads/t1?embed=1",
+    );
   });
 
   test("falls back to NEXT_PUBLIC_BACKEND_BASE_URL for direct deployments", () => {
