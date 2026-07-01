@@ -50,6 +50,11 @@ def _require_user_data_path(path: str) -> str:
     return normalised
 
 
+def _is_existing_directory_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "file exists" in message or "already exists" in message
+
+
 class VercelSandbox(Sandbox):
     """Sandbox implementation backed by Vercel Sandbox.
 
@@ -321,6 +326,8 @@ class VercelSandbox(Sandbox):
         if output.startswith("Error:"):
             logger.warning("Failed to list Vercel sandbox files for sync: %s", output)
             return
+        if output.strip() in {"", "(no output)"}:
+            return
 
         for line in output.splitlines():
             path = line.strip()
@@ -354,7 +361,11 @@ class VercelSandbox(Sandbox):
                     data = content
             parent = posixpath.dirname(path)
             if parent:
-                self._sdk().mk_dir(parent)
+                try:
+                    self._sdk().mk_dir(parent)
+                except Exception as exc:
+                    if not _is_existing_directory_error(exc):
+                        raise
             self._sdk().write_files([{"path": path, "content": data, "mode": 0o644}])
             self._mirror_user_data_path(path, data)
 
