@@ -97,6 +97,27 @@ def test_vercel_sandbox_mirrors_user_data_writes_to_host(tmp_path):
     assert host_file.read_text(encoding="utf-8") == "hello world"
 
 
+def test_vercel_sandbox_write_file_allows_existing_parent_directory(tmp_path):
+    class ExistingDirectoryClient(FakeVercelClient):
+        def mk_dir(self, path: str, *, cwd: str | None = None) -> None:
+            raise RuntimeError("HTTP 400: error creating directory: File exists (code=file_error)")
+
+    paths = Paths(base_dir=tmp_path)
+    paths.ensure_thread_dirs("thread-existing-dir", user_id="user-1")
+    client = ExistingDirectoryClient("sbx_existing")
+    sandbox = VercelSandbox(
+        id="vercel-thread",
+        client=client,
+        thread_id="thread-existing-dir",
+        user_id="user-1",
+        paths=paths,
+    )
+
+    sandbox.write_file("/mnt/user-data/workspace/phase1-smoke.txt", "ok")
+
+    assert client.files["/mnt/user-data/workspace/phase1-smoke.txt"] == b"ok"
+
+
 def test_vercel_provider_persists_mapping_stops_and_resumes(tmp_path, monkeypatch):
     import deerflow.community.vercel_sandbox.vercel_sandbox as sandbox_mod
     import deerflow.community.vercel_sandbox.vercel_sandbox_provider as provider_mod
