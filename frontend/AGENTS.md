@@ -53,7 +53,7 @@ The frontend is a stateful chat application. Users create **threads** (conversat
   - `workspace/` — Chat page components (messages, artifacts, settings)
   - `landing/` — Landing page sections
   - `docs/` — Docs / MDX rendering components
-- **`core/`** — Business logic, the heart of the app. Domains include `threads/` (creation, streaming, state), `api/` (LangGraph client singleton), `embed-auth` (stores Orpheus embed tokens and injects `X-DeerFlow-Embed-Token`), `agents/` (custom agents), `auth/` (authentication), `artifacts/`, `channels/` (IM connections), `i18n/` (en-US, zh-CN), `settings/`, `memory/`, `skills/`, `messages/`, `mcp/`, `models/`, `suggestions/`, `tasks/`, `todos/`, `tools/`, `config/`, `notification/`, `blog/`, plus rendering helpers (`rehype/`, `streamdown/`) and `utils/`.
+- **`core/`** — Business logic, the heart of the app. Domains include `threads/` (creation, streaming, state), `api/` (LangGraph client singleton), `embed-auth` (stores Orpheus embed tokens, forwards Orpheus session/workspace ids into run metadata, and injects `X-DeerFlow-Embed-Token`), `agents/` (custom agents), `auth/` (authentication), `artifacts/`, `channels/` (IM connections), `i18n/` (en-US, zh-CN), `settings/`, `memory/`, `skills/`, `messages/`, `mcp/`, `models/`, `suggestions/`, `tasks/`, `todos/`, `tools/`, `config/`, `notification/`, `blog/`, plus rendering helpers (`rehype/`, `streamdown/`) and `utils/`.
 - **`hooks/`** — Shared React hooks
 - **`lib/`** — Utilities (`cn()` from clsx + tailwind-merge)
 - **`content/`** — MDX content (blog posts, docs) rendered by the app

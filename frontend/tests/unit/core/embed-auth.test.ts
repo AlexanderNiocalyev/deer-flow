@@ -4,6 +4,7 @@ import {
   EMBED_AUTH_HEADER_NAME,
   consumeEmbedTokenFromUrl,
   getEmbedToken,
+  getOrpheusEmbedContext,
   withEmbedAuthHeader,
 } from "@/core/embed-auth";
 
@@ -62,14 +63,22 @@ test("getEmbedToken reads URL token and stores it for later requests", () => {
   window.history.replaceState(
     null,
     "",
-    "/embed/chats/thread-1?embed=1&embed_token=signed-token",
+    "/embed/chats/thread-1?embed=1&embed_token=signed-token&orpheus_session_id=agws_1&orpheus_workspace_id=ws_1",
   );
 
   expect(getEmbedToken()).toBe("signed-token");
+  expect(getOrpheusEmbedContext()).toEqual({
+    orpheus_session_id: "agws_1",
+    orpheus_workspace_id: "ws_1",
+  });
 
   window.history.replaceState(null, "", "/embed/chats/thread-1?embed=1");
 
   expect(getEmbedToken()).toBe("signed-token");
+  expect(getOrpheusEmbedContext()).toEqual({
+    orpheus_session_id: "agws_1",
+    orpheus_workspace_id: "ws_1",
+  });
 });
 
 test("withEmbedAuthHeader injects the embed auth header", () => {
@@ -89,11 +98,17 @@ test("consumeEmbedTokenFromUrl stores token and removes it from the address bar"
   window.history.replaceState(
     null,
     "",
-    "/embed/chats/thread-1?embed=1&embed_token=signed-token&x=1",
+    "/embed/chats/thread-1?embed=1&embed_token=signed-token&orpheus_session_id=agws_1&orpheus_workspace_id=ws_1&x=1",
   );
 
   consumeEmbedTokenFromUrl();
 
-  expect(window.location.search).toBe("?embed=1&x=1");
+  expect(window.location.search).toBe(
+    "?embed=1&orpheus_session_id=agws_1&orpheus_workspace_id=ws_1&x=1",
+  );
   expect(getEmbedToken()).toBe("signed-token");
+  expect(getOrpheusEmbedContext()).toEqual({
+    orpheus_session_id: "agws_1",
+    orpheus_workspace_id: "ws_1",
+  });
 });

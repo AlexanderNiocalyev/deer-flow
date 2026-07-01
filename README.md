@@ -433,6 +433,7 @@ Notes:
 - If `assistant_id` is set to a custom agent name, DeerFlow still routes through `lead_agent` and injects that value as `agent_name`, so the custom agent's SOUL/config takes effect for IM channels.
 - IM channel workers call Gateway's LangGraph-compatible API internally and automatically attach process-local internal auth plus the CSRF cookie/header pair required for thread and run creation.
 - Orpheus iframe embeds can use `DEERFLOW_EMBED_TOKEN_SECRET` to sign short-lived `/embed/chats/{thread_id}` access tokens; Gateway accepts `X-DeerFlow-Embed-Token` only for the token-bound thread.
+- Set `ORPHEUS_AGENT_WORKSPACE_CALLBACK_URL` and `ORPHEUS_AGENT_WORKSPACE_CALLBACK_TOKEN` when DeerFlow should mirror run state, lifecycle events, and artifact paths back into Orpheus Agent Workspace.
 
 Set the corresponding API keys in your `.env` file:
 

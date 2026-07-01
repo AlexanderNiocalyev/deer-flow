@@ -276,6 +276,8 @@ CORS is same-origin by default when requests enter through nginx on port 2026. S
 
 Orpheus embeds use `DEERFLOW_EMBED_TOKEN_SECRET` and the `X-DeerFlow-Embed-Token` header. `app/gateway/embed_auth.py` verifies the short-lived HMAC token, binds it to a single thread id, and lets `AuthMiddleware` stamp an `auth_source="embed"` user context. `CSRFMiddleware` skips double-submit CSRF only after that same token verifies for the request path.
 
+When embedded by Orpheus, run state mirroring is configured with `ORPHEUS_AGENT_WORKSPACE_CALLBACK_URL` and `ORPHEUS_AGENT_WORKSPACE_CALLBACK_TOKEN`. The frontend forwards `orpheus_session_id` / `orpheus_workspace_id` from the embed URL into run metadata/context, and `deerflow.integrations.orpheus_mirror` posts best-effort run lifecycle events and artifact paths back to Orpheus. DeerFlow remains the Vercel Sandbox owner; Orpheus only mirrors product state.
+
 **Routers**:
 
 | Router | Endpoints |
