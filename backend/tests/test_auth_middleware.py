@@ -47,6 +47,7 @@ def test_public_paths(path: str):
         "/api/threads/123/runs",
         "/api/v1/auth/me",
         "/api/v1/auth/change-password",
+        "/internal/capacity",
     ],
 )
 def test_protected_paths(path: str):

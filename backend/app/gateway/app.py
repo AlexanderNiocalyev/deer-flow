@@ -16,6 +16,7 @@ from app.gateway.routers import (
     artifacts,
     assistants_compat,
     auth,
+    capacity,
     channel_connections,
     channels,
     feedback,
@@ -395,6 +396,9 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
 
     # Internal runtime lifecycle API is mounted at /api/internal/runtime
     app.include_router(runtime_lifecycle.router)
+
+    # Internal capacity API is mounted at /internal/capacity for origin routing.
+    app.include_router(capacity.router)
 
     # Agents API is mounted at /api/agents
     app.include_router(agents.router)
