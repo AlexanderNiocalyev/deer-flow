@@ -64,16 +64,22 @@ export DEERFLOW_BACKEND_ALLOW_UNAUTHENTICATED=0
 export DEERFLOW_FRONTEND_ALLOW_UNAUTHENTICATED=0
 ```
 
-The first production revision intentionally uses one Gateway instance:
+The default production footprint keeps one warm Gateway instance for background
+run/finalization work, but lowers the idle baseline:
 
 ```text
-DEERFLOW_BACKEND_MAX_INSTANCES=1
+DEERFLOW_BACKEND_CPU=1
+DEERFLOW_BACKEND_MEMORY=2Gi
+DEERFLOW_BACKEND_MIN_INSTANCES=1
+DEERFLOW_BACKEND_MAX_INSTANCES=2
 DEERFLOW_BACKEND_CONCURRENCY=10
 DEERFLOW_BACKEND_TIMEOUT=3600
+DEERFLOW_FRONTEND_MIN_INSTANCES=0
 ```
 
-Keep that until RunManager, StreamBridge, cancel/reconnect, and request
-deduplication are backed by shared infrastructure instead of process memory.
+The Gateway still deploys with `--no-cpu-throttling`. Keep that until
+RunManager, StreamBridge, cancel/reconnect, sandbox release, and event/callback
+finalization are validated under request-based CPU throttling.
 
 ## Smoke Test
 
