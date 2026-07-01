@@ -1,0 +1,153 @@
+name: Deploy DeerFlow to Cloud Run
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "GitHub Environment containing Cloud Run vars/secrets"
+        type: choice
+        options:
+          - staging
+          - production
+        default: staging
+        required: true
+      mode:
+        description: "deploy-cloud-run.sh mode"
+        type: choice
+        options:
+          - all
+          - build
+          - deploy
+        default: all
+        required: true
+      image_tag:
+        description: "Optional image tag; defaults to current commit SHA"
+        required: false
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/cloud-run-deploy.yml"
+      - "ops/deerflow/cloud-run/**"
+      - "backend/**"
+      - "frontend/**"
+      - "docker/**"
+      - "skills/**"
+      - "contracts/**"
+      - "Makefile"
+      - "config.example.yaml"
+      - "extensions_config.example.json"
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: cloud-run-${{ github.event_name == 'workflow_dispatch' && github.event.inputs.environment || 'production' }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy Cloud Run
+    # Main-branch automatic production deploy is opt-in. Set repo/environment variable
+    # CLOUD_RUN_DEPLOY_ON_MAIN=true after branch protection and required checks are configured.
+    if: github.event_name == 'workflow_dispatch' || vars.CLOUD_RUN_DEPLOY_ON_MAIN == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.environment || 'production' }}
+    env:
+      DEPLOY_MODE: ${{ github.event.inputs.mode || 'all' }}
+      IMAGE_TAG: ${{ github.event.inputs.image_tag || github.sha }}
+      PROJECT_ID: ${{ vars.GCP_PROJECT_ID || secrets.GCP_PROJECT_ID }}
+      GOOGLE_CLOUD_PROJECT: ${{ vars.GCP_PROJECT_ID || secrets.GCP_PROJECT_ID }}
+      CLOUD_RUN_REGION: ${{ vars.CLOUD_RUN_REGION || 'us-central1' }}
+      ARTIFACT_REGISTRY_REPOSITORY: ${{ vars.ARTIFACT_REGISTRY_REPOSITORY || 'deerflow' }}
+      DEERFLOW_BACKEND_SERVICE: ${{ vars.DEERFLOW_BACKEND_SERVICE || 'deerflow-gateway' }}
+      DEERFLOW_FRONTEND_SERVICE: ${{ vars.DEERFLOW_FRONTEND_SERVICE || 'deerflow-frontend' }}
+      DEERFLOW_FRONTEND_PUBLIC_URL: ${{ vars.DEERFLOW_FRONTEND_PUBLIC_URL }}
+      DEERFLOW_PUBLIC_BASE_URL: ${{ vars.DEERFLOW_PUBLIC_BASE_URL }}
+      ORPHEUS_AGENT_WORKSPACE_CALLBACK_URL: ${{ vars.ORPHEUS_AGENT_WORKSPACE_CALLBACK_URL }}
+      GATEWAY_CORS_ORIGINS: ${{ vars.GATEWAY_CORS_ORIGINS }}
+      DEERFLOW_BACKEND_ALLOW_UNAUTHENTICATED: ${{ vars.DEERFLOW_BACKEND_ALLOW_UNAUTHENTICATED || '1' }}
+      DEERFLOW_FRONTEND_ALLOW_UNAUTHENTICATED: ${{ vars.DEERFLOW_FRONTEND_ALLOW_UNAUTHENTICATED || '1' }}
+      DATABASE_URL_SECRET_NAME: ${{ vars.DATABASE_URL_SECRET_NAME || 'deerflow-database-url' }}
+      VERCEL_TOKEN_SECRET_NAME: ${{ vars.VERCEL_TOKEN_SECRET_NAME || 'deerflow-vercel-token' }}
+      VERCEL_PROJECT_ID_SECRET_NAME: ${{ vars.VERCEL_PROJECT_ID_SECRET_NAME || 'deerflow-vercel-project-id' }}
+      VERCEL_TEAM_ID_SECRET_NAME: ${{ vars.VERCEL_TEAM_ID_SECRET_NAME }}
+      OPENAI_API_KEY_SECRET_NAME: ${{ vars.OPENAI_API_KEY_SECRET_NAME }}
+      BETTER_AUTH_SECRET_NAME: ${{ vars.BETTER_AUTH_SECRET_NAME || 'deerflow-better-auth-secret' }}
+      AUTH_JWT_SECRET_SECRET_NAME: ${{ vars.AUTH_JWT_SECRET_SECRET_NAME || 'deerflow-auth-jwt-secret' }}
+      DEER_FLOW_INTERNAL_AUTH_TOKEN_SECRET_NAME: ${{ vars.DEER_FLOW_INTERNAL_AUTH_TOKEN_SECRET_NAME || 'deerflow-internal-auth-token' }}
+      DEERFLOW_EMBED_TOKEN_SECRET_NAME: ${{ vars.DEERFLOW_EMBED_TOKEN_SECRET_NAME }}
+      ORPHEUS_AGENT_WORKSPACE_CALLBACK_TOKEN_SECRET_NAME: ${{ vars.ORPHEUS_AGENT_WORKSPACE_CALLBACK_TOKEN_SECRET_NAME }}
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v6
+
+      - name: Validate workflow inputs and deployment script
+        env:
+          GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in PROJECT_ID GCP_WORKLOAD_IDENTITY_PROVIDER GCP_SERVICE_ACCOUNT; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::Missing required Cloud Run deployment setting: ${name}"
+              missing=1
+            fi
+          done
+          [[ "$DEPLOY_MODE" =~ ^(all|build|deploy)$ ]] || { echo "::error::Invalid DEPLOY_MODE=${DEPLOY_MODE}"; missing=1; }
+          bash -n ops/deerflow/cloud-run/deploy-cloud-run.sh
+          if [[ "$missing" -ne 0 ]]; then
+            {
+              echo "Required GitHub Environment or repository settings:"
+              echo "- Secret: GCP_WORKLOAD_IDENTITY_PROVIDER"
+              echo "- Secret: GCP_SERVICE_ACCOUNT"
+              echo "- Variable or secret: GCP_PROJECT_ID"
+              echo "Recommended variables:"
+              echo "- CLOUD_RUN_REGION"
+              echo "- DEERFLOW_FRONTEND_PUBLIC_URL"
+              echo "- ORPHEUS_AGENT_WORKSPACE_CALLBACK_URL"
+              echo "- OPENAI_API_KEY_SECRET_NAME"
+              echo "- DEERFLOW_EMBED_TOKEN_SECRET_NAME"
+              echo "- ORPHEUS_AGENT_WORKSPACE_CALLBACK_TOKEN_SECRET_NAME"
+            } >&2
+            exit 1
+          fi
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy
+        run: |
+          set -euo pipefail
+          ops/deerflow/cloud-run/deploy-cloud-run.sh "$DEPLOY_MODE"
+
+      - name: Smoke test Gateway health
+        if: env.DEPLOY_MODE != 'build'
+        run: |
+          set -euo pipefail
+          backend_url="$(gcloud run services describe "${DEERFLOW_BACKEND_SERVICE:-deerflow-gateway}" \
+            --project "$PROJECT_ID" \
+            --region "${CLOUD_RUN_REGION:-us-central1}" \
+            --format='value(status.url)')"
+          [[ -n "$backend_url" ]] || { echo "::error::Could not resolve Cloud Run backend URL"; exit 1; }
+          echo "Gateway URL: ${backend_url}"
+          curl -fsS "${backend_url}/health" | tee /tmp/deerflow-health.json
+          {
+            echo "### DeerFlow Cloud Run deploy"
+            echo "- Environment: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.environment || 'production' }}"
+            echo "- Mode: ${DEPLOY_MODE}"
+            echo "- Commit: ${GITHUB_SHA}"
+            echo "- Backend URL: ${backend_url}"
+            echo "- Health:"
+            echo '```json'
+            cat /tmp/deerflow-health.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

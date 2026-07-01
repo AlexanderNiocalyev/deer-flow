@@ -1,0 +1,199 @@
+name: Weekly Upstream Sync
+
+on:
+  schedule:
+    # Weekly check: Monday 02:00 UTC. Opens/updates a PR; it never merges upstream automatically.
+    - cron: "0 2 * * 1"
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: "Upstream branch/ref to merge from bytedance/deer-flow"
+        required: false
+        default: "main"
+      sync_branch:
+        description: "Branch in this fork used for the sync PR"
+        required: false
+        default: "sync/upstream-main"
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: upstream-sync-${{ github.event.inputs.upstream_ref || 'main' }}
+  cancel-in-progress: false
+
+jobs:
+  open-sync-pr:
+    name: Check upstream and open sync PR
+    if: github.repository == 'AlexanderNiocalyev/deer-flow'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      UPSTREAM_REPO: https://github.com/bytedance/deer-flow.git
+      UPSTREAM_REF: ${{ github.event.inputs.upstream_ref || 'main' }}
+      SYNC_BRANCH: ${{ github.event.inputs.sync_branch || 'sync/upstream-main' }}
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch fork and upstream
+        run: |
+          set -euo pipefail
+          git remote add upstream "$UPSTREAM_REPO" 2>/dev/null || git remote set-url upstream "$UPSTREAM_REPO"
+          git fetch --prune origin main
+          git fetch --prune upstream "$UPSTREAM_REF"
+
+          base_sha="$(git rev-parse origin/main)"
+          upstream_sha="$(git rev-parse FETCH_HEAD)"
+          upstream_only="$(git rev-list --count "origin/main..${upstream_sha}")"
+          local_only="$(git rev-list --count "${upstream_sha}..origin/main")"
+
+          {
+            echo "BASE_SHA=${base_sha}"
+            echo "UPSTREAM_SHA=${upstream_sha}"
+            echo "UPSTREAM_ONLY=${upstream_only}"
+            echo "LOCAL_ONLY=${local_only}"
+          } >> "$GITHUB_ENV"
+
+          echo "### Upstream sync check" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Fork base: \`${base_sha}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Upstream ${UPSTREAM_REF}: \`${upstream_sha}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Upstream-only commits: ${upstream_only}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Fork-only commits: ${local_only}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Stop when already current
+        if: env.UPSTREAM_ONLY == '0'
+        run: |
+          echo "No upstream commits missing from origin/main." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Merge upstream into sync branch
+        if: env.UPSTREAM_ONLY != '0'
+        run: |
+          set -euo pipefail
+          git checkout -B "$SYNC_BRANCH" origin/main
+
+          set +e
+          git merge --no-ff --no-edit "$UPSTREAM_SHA"
+          merge_status=$?
+          set -e
+
+          if [[ "$merge_status" -ne 0 ]]; then
+            conflict_files="$(git diff --name-only --diff-filter=U || true)"
+            git merge --abort || true
+
+            commits="$(git log --oneline --max-count=30 "origin/main..${UPSTREAM_SHA}" || true)"
+            body_file="$(mktemp)"
+            cat > "$body_file" <<EOF
+          Automated weekly upstream sync could not merge cleanly.
+
+          - Upstream repo: bytedance/deer-flow
+          - Upstream ref: ${UPSTREAM_REF}
+          - Upstream SHA: ${UPSTREAM_SHA}
+          - Fork base SHA: ${BASE_SHA}
+          - Sync branch: ${SYNC_BRANCH}
+
+          ## Conflicting files
+
+          \`\`\`text
+          ${conflict_files:-unknown}
+          \`\`\`
+
+          ## Upstream commits not yet in fork
+
+          \`\`\`text
+          ${commits:-none listed}
+          \`\`\`
+
+          Next step: create a manual sync branch, resolve conflicts, run CI/staging smoke tests, then merge to main only after validation.
+          EOF
+
+            issue_number="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "Manual upstream sync required bytedance deer-flow ${UPSTREAM_REF} in:title" --json number --jq '.[0].number // empty')"
+            if [[ -n "$issue_number" ]]; then
+              gh issue comment "$issue_number" --repo "$GITHUB_REPOSITORY" --body-file "$body_file"
+              echo "Updated existing conflict issue #${issue_number}." >> "$GITHUB_STEP_SUMMARY"
+            else
+              gh issue create \
+                --repo "$GITHUB_REPOSITORY" \
+                --title "Manual upstream sync required: bytedance/deer-flow ${UPSTREAM_REF}" \
+                --body-file "$body_file"
+              echo "Created manual-sync conflict issue." >> "$GITHUB_STEP_SUMMARY"
+            fi
+
+            exit 1
+          fi
+
+          git push --force-with-lease origin "$SYNC_BRANCH"
+
+      - name: Open or update sync PR
+        if: env.UPSTREAM_ONLY != '0'
+        run: |
+          set -euo pipefail
+          commits="$(git log --oneline --max-count=40 "origin/main..${UPSTREAM_SHA}" || true)"
+          body_file="$(mktemp)"
+          cat > "$body_file" <<EOF
+          ## What
+
+          Automated weekly sync from \`bytedance/deer-flow:${UPSTREAM_REF}\` into this fork.
+
+          This PR intentionally **does not merge automatically**. It keeps the production rule:
+
+          \`\`\`text
+          origin/main = production truth
+          upstream/main = read-only vendor source
+          Cloud Run = deploy only from this fork
+          \`\`\`
+
+          ## Refs
+
+          - Fork base: \`${BASE_SHA}\`
+          - Upstream: \`${UPSTREAM_SHA}\`
+          - Sync branch: \`${SYNC_BRANCH}\`
+
+          ## Upstream commits included
+
+          \`\`\`text
+          ${commits:-none listed}
+          \`\`\`
+
+          ## Required verification before merge
+
+          - [ ] Backend unit tests passed
+          - [ ] Frontend unit tests passed
+          - [ ] Lint/check workflows passed
+          - [ ] Docker/Cloud Build path still works
+          - [ ] Cloud Run staging deploy passed, if this sync touches runtime/deploy/frontend/backend behavior
+          - [ ] Gateway \`/health\` smoke test passed on staging
+          - [ ] Orpheus workspace / signed embed / sandbox flow still works
+          - [ ] Production rollback revision is known before production deploy
+
+          ## Deployment rule
+
+          Merge this PR into \`main\` only after the checks above are green. Production Cloud Run deploy should then run from the fork, not from upstream.
+          EOF
+
+          existing_pr="$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --head "$SYNC_BRANCH" --json number --jq '.[0].number // empty')"
+          title="chore: sync upstream DeerFlow ${UPSTREAM_REF}"
+
+          if [[ -n "$existing_pr" ]]; then
+            gh pr edit "$existing_pr" --repo "$GITHUB_REPOSITORY" --title "$title" --body-file "$body_file"
+            gh pr comment "$existing_pr" --repo "$GITHUB_REPOSITORY" --body "Updated sync branch to upstream \`${UPSTREAM_SHA}\`."
+            echo "Updated PR #${existing_pr}." >> "$GITHUB_STEP_SUMMARY"
+          else
+            pr_url="$(gh pr create \
+              --repo "$GITHUB_REPOSITORY" \
+              --base main \
+              --head "$SYNC_BRANCH" \
+              --title "$title" \
+              --body-file "$body_file")"
+            echo "Opened PR: ${pr_url}" >> "$GITHUB_STEP_SUMMARY"
+          fi
