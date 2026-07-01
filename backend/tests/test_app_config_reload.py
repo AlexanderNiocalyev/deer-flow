@@ -447,6 +447,37 @@ def test_get_app_config_resets_persistence_runtime_singletons_when_checkpointer_
         _reset_config_singletons()
 
 
+def test_get_app_config_resets_persistence_runtime_singletons_when_database_changes(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    extensions_path = tmp_path / "extensions_config.json"
+    _write_extensions_config(extensions_path)
+    _write_config_with_sections(config_path, {"database": {"backend": "memory"}})
+
+    monkeypatch.setenv("DEER_FLOW_CONFIG_PATH", str(config_path))
+    monkeypatch.setenv("DEER_FLOW_EXTENSIONS_CONFIG_PATH", str(extensions_path))
+    _reset_config_singletons()
+
+    try:
+        get_app_config()
+        initial_checkpointer = get_checkpointer()
+        initial_store = get_store()
+
+        _write_config_with_sections(
+            config_path,
+            {"database": {"backend": "sqlite", "sqlite_dir": str(tmp_path / "db")}},
+        )
+        next_mtime = config_path.stat().st_mtime + 5
+        os.utime(config_path, (next_mtime, next_mtime))
+
+        reloaded = get_app_config()
+
+        assert reloaded.database.backend == "sqlite"
+        assert get_checkpointer() is not initial_checkpointer
+        assert get_store() is not initial_store
+    finally:
+        _reset_config_singletons()
+
+
 def test_get_app_config_keeps_persistence_runtime_singletons_when_checkpointer_unchanged(tmp_path, monkeypatch):
     config_path = tmp_path / "config.yaml"
     extensions_path = tmp_path / "extensions_config.json"

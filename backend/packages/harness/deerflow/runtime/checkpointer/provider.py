@@ -32,6 +32,11 @@ from deerflow.runtime.store._sqlite_utils import ensure_sqlite_parent_dir, resol
 
 logger = logging.getLogger(__name__)
 
+
+def _is_persistent_database_backend(db_config) -> bool:
+    return getattr(db_config, "backend", None) in {"sqlite", "postgres"}
+
+
 # ---------------------------------------------------------------------------
 # Error message constants — imported by aio.provider too
 # ---------------------------------------------------------------------------
@@ -95,6 +100,48 @@ def _sync_checkpointer_cm(config: CheckpointerConfig) -> Iterator[Checkpointer]:
     raise ValueError(f"Unknown checkpointer type: {config.type!r}")
 
 
+@contextlib.contextmanager
+def _sync_checkpointer_from_database_cm(db_config) -> Iterator[Checkpointer]:
+    """Create a sync checkpointer from the unified ``database:`` config."""
+    if db_config.backend == "memory":
+        from langgraph.checkpoint.memory import InMemorySaver
+
+        logger.info("Checkpointer: using InMemorySaver (database.backend=memory)")
+        yield InMemorySaver()
+        return
+
+    if db_config.backend == "sqlite":
+        try:
+            from langgraph.checkpoint.sqlite import SqliteSaver
+        except ImportError as exc:
+            raise ImportError(SQLITE_INSTALL) from exc
+
+        conn_str = resolve_sqlite_conn_str(db_config.checkpointer_sqlite_path)
+        ensure_sqlite_parent_dir(conn_str)
+        with SqliteSaver.from_conn_string(conn_str) as saver:
+            saver.setup()
+            logger.info("Checkpointer: using SqliteSaver from database config (%s)", conn_str)
+            yield saver
+        return
+
+    if db_config.backend == "postgres":
+        try:
+            from langgraph.checkpoint.postgres import PostgresSaver
+        except ImportError as exc:
+            raise ImportError(POSTGRES_INSTALL) from exc
+
+        if not db_config.postgres_url:
+            raise ValueError("database.postgres_url is required for the postgres checkpointer backend")
+
+        with PostgresSaver.from_conn_string(db_config.postgres_url) as saver:
+            saver.setup()
+            logger.info("Checkpointer: using PostgresSaver from database config")
+            yield saver
+        return
+
+    raise ValueError(f"Unknown database backend for checkpointer: {db_config.backend!r}")
+
+
 # ---------------------------------------------------------------------------
 # Sync singleton
 # ---------------------------------------------------------------------------
@@ -107,7 +154,8 @@ _checkpointer_lock = threading.Lock()
 def get_checkpointer() -> Checkpointer:
     """Return the global sync checkpointer singleton, creating it on first call.
 
-    Returns an ``InMemorySaver`` when no checkpointer is configured in *config.yaml*.
+    Uses legacy ``checkpointer:`` when present, otherwise falls back to the
+    unified ``database:`` backend.
 
     Raises:
         ImportError: If the required package for the configured backend is not installed.
@@ -130,14 +178,22 @@ def get_checkpointer() -> Checkpointer:
 
         config = get_checkpointer_config()
 
-        if config is None:
-            from langgraph.checkpoint.memory import InMemorySaver
+        if config is not None:
+            checkpointer_ctx = _sync_checkpointer_cm(config)
+        else:
+            try:
+                app_config = get_app_config()
+            except FileNotFoundError:
+                app_config = None
+            db_config = getattr(app_config, "database", None)
+            if _is_persistent_database_backend(db_config):
+                checkpointer_ctx = _sync_checkpointer_from_database_cm(db_config)
+            else:
+                from langgraph.checkpoint.memory import InMemorySaver
 
-            logger.info("Checkpointer: using InMemorySaver (in-process, not persistent)")
-            _checkpointer = InMemorySaver()
-            return _checkpointer
-
-        checkpointer_ctx = _sync_checkpointer_cm(config)
+                logger.info("Checkpointer: using InMemorySaver (in-process, not persistent)")
+                _checkpointer = InMemorySaver()
+                return _checkpointer
         checkpointer = checkpointer_ctx.__enter__()
         _checkpointer_ctx = checkpointer_ctx
         _checkpointer = checkpointer
@@ -171,22 +227,26 @@ def reset_checkpointer() -> None:
 def checkpointer_context() -> Iterator[Checkpointer]:
     """Sync context manager that yields a checkpointer and cleans up on exit.
 
-    Unlike :func:`get_checkpointer`, this does **not** cache the instance —
-    each ``with`` block creates and destroys its own connection.  Use it in
-    CLI scripts or tests where you want deterministic cleanup::
+    Unlike :func:`get_checkpointer`, this does not cache the instance. Each
+    ``with`` block creates and destroys its own connection. Use it in CLI
+    scripts or tests where deterministic cleanup matters.
 
-        with checkpointer_context() as cp:
-            graph.invoke(input, config={"configurable": {"thread_id": "1"}})
-
-    Yields an ``InMemorySaver`` when no checkpointer is configured in *config.yaml*.
+    Uses legacy ``checkpointer:`` when present, otherwise falls back to the
+    unified ``database:`` backend.
     """
 
     config = get_app_config()
-    if config.checkpointer is None:
-        from langgraph.checkpoint.memory import InMemorySaver
+    if config.checkpointer is not None:
+        with _sync_checkpointer_cm(config.checkpointer) as saver:
+            yield saver
+            return
 
-        yield InMemorySaver()
-        return
+    db_config = getattr(config, "database", None)
+    if _is_persistent_database_backend(db_config):
+        with _sync_checkpointer_from_database_cm(db_config) as saver:
+            yield saver
+            return
 
-    with _sync_checkpointer_cm(config.checkpointer) as saver:
-        yield saver
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    yield InMemorySaver()
