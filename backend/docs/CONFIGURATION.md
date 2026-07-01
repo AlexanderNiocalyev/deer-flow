@@ -286,9 +286,12 @@ sandbox:
 Vercel Sandbox runs only the execution workspace: bash commands, file reads/writes, lightweight
 code execution, and optional preview ports. Keep DeerFlow Gateway, LangGraph runtime, frontend,
 memory, thread store, IM channels, and orchestration in the main DeerFlow service. DeerFlow stores
-its own deterministic per-thread sandbox id and a separate Vercel sandbox id in thread metadata so
-threads can resume persistent Vercel sandboxes across turns without coupling business session ids
-to provider resource ids.
+its own deterministic per-thread sandbox id and a separate Vercel sandbox id in `runtime_bindings`
+so threads can resume persistent Vercel sandboxes across turns without coupling business session ids
+to provider resource ids. In production, set `database.backend` to `postgres` or `sqlite` and keep
+the default `vercel_record_store: auto` (or force `database`) so these mappings survive Cloud Run
+instance restarts and multi-instance scheduling. Without an initialized database, `auto` falls back
+to local JSON files for development only.
 
 Vercel does not mount DeerFlow's host thread directories. `VercelSandboxProvider` syncs existing
 workspace/uploads into the sandbox on acquire and mirrors writes under `/mnt/user-data/*` back to
@@ -310,6 +313,7 @@ sandbox:
   vercel_timeout_ms: 3600000
   vercel_ports: [3000]
   vercel_stop_on_release: true
+  vercel_record_store: database     # production: database; local dev can use auto/file
   vercel_environment:
     NODE_ENV: production
     API_KEY: $MY_API_KEY

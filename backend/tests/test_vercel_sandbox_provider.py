@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import shlex
+import time
 from types import SimpleNamespace
 from typing import Any
 
+from deerflow.community.vercel_sandbox.record_store import DatabaseVercelSandboxRecordStore
 from deerflow.community.vercel_sandbox.vercel_sandbox import VercelSandbox
 from deerflow.config.paths import Paths
+from deerflow.persistence.runtime_binding.model import RuntimeBindingRow
 
 
 class FakeCommandFinished:
@@ -161,3 +165,128 @@ def test_vercel_provider_persists_mapping_stops_and_resumes(tmp_path, monkeypatc
     assert reacquired_id == sandbox_id
     assert created == ["sbx_1"]
     assert resumed == ["sbx_1"]
+
+
+def test_vercel_provider_uses_database_record_store_when_configured(tmp_path, monkeypatch):
+    import deerflow.community.vercel_sandbox.vercel_sandbox as sandbox_mod
+    import deerflow.community.vercel_sandbox.vercel_sandbox_provider as provider_mod
+    from deerflow.persistence.engine import close_engine, get_session_factory, init_engine
+
+    async def load_binding(sandbox_id: str) -> RuntimeBindingRow | None:
+        sf = get_session_factory()
+        async with sf() as session:
+            return await session.get(RuntimeBindingRow, f"vercel:{sandbox_id}")
+
+    asyncio.run(close_engine())
+    asyncio.run(
+        init_engine(
+            "sqlite",
+            url=f"sqlite+aiosqlite:///{tmp_path / 'deerflow.db'}",
+            sqlite_dir=str(tmp_path),
+        )
+    )
+
+    try:
+        paths = Paths(base_dir=tmp_path)
+        paths.ensure_thread_dirs("thread-db", user_id="user-db")
+
+        sandbox_cfg = SimpleNamespace(
+            environment={},
+            vercel_environment={},
+            vercel_vcpus=2,
+            vercel_memory_mb=4096,
+            vercel_runtime="python3.13",
+            vercel_stop_on_release=True,
+            vercel_record_store="database",
+        )
+        monkeypatch.setattr(provider_mod, "get_app_config", lambda: SimpleNamespace(sandbox=sandbox_cfg))
+        monkeypatch.setattr(provider_mod, "get_paths", lambda: paths)
+        monkeypatch.setattr(sandbox_mod, "get_paths", lambda: paths)
+        monkeypatch.setattr(provider_mod.VercelSandboxProvider, "_register_signal_handlers", lambda self: None)
+
+        remote_clients: dict[str, FakeVercelClient] = {}
+        created: list[str] = []
+        resumed: list[str] = []
+
+        def fake_create(self):
+            remote_id = f"sbx_{len(created) + 1}"
+            created.append(remote_id)
+            client = FakeVercelClient(remote_id)
+            remote_clients[remote_id] = client
+            return client
+
+        def fake_get(self, vercel_sandbox_id: str):
+            resumed.append(vercel_sandbox_id)
+            return remote_clients[vercel_sandbox_id]
+
+        monkeypatch.setattr(provider_mod.VercelSandboxProvider, "_create_vercel_sandbox", fake_create)
+        monkeypatch.setattr(provider_mod.VercelSandboxProvider, "_get_vercel_sandbox", fake_get)
+
+        provider = provider_mod.VercelSandboxProvider()
+        assert isinstance(provider._record_store(), DatabaseVercelSandboxRecordStore)
+
+        sandbox_id = provider.acquire("thread-db", user_id="user-db")
+        provider.release(sandbox_id)
+
+        record_path = paths.thread_dir("thread-db", user_id="user-db") / f"{sandbox_id}.vercel-sandbox.json"
+        assert not record_path.exists()
+
+        binding = asyncio.run(load_binding(sandbox_id))
+        assert binding is not None
+        assert binding.sandbox_id == sandbox_id
+        assert binding.provider_sandbox_id == "sbx_1"
+        assert binding.thread_id == "thread-db"
+        assert binding.user_id == "user-db"
+        assert binding.status == "stopped"
+
+        restarted_provider = provider_mod.VercelSandboxProvider()
+        reacquired_id = restarted_provider.acquire("thread-db", user_id="user-db")
+
+        assert reacquired_id == sandbox_id
+        assert created == ["sbx_1"]
+        assert resumed == ["sbx_1"]
+
+        restarted_provider.release(reacquired_id)
+    finally:
+        asyncio.run(close_engine())
+
+
+def test_database_record_store_claim_has_single_owner(tmp_path):
+    from deerflow.persistence.engine import close_engine, get_session_factory, init_engine
+
+    asyncio.run(close_engine())
+    asyncio.run(
+        init_engine(
+            "sqlite",
+            url=f"sqlite+aiosqlite:///{tmp_path / 'claims.db'}",
+            sqlite_dir=str(tmp_path),
+        )
+    )
+
+    try:
+        sf = get_session_factory()
+        assert sf is not None
+        store = DatabaseVercelSandboxRecordStore(sf)
+        now = time.time()
+        record = {
+            "sandbox_id": "vercel-claim",
+            "vercel_sandbox_id": "",
+            "thread_id": "thread-claim",
+            "user_id": "user-claim",
+            "status": "creating",
+            "created_at": now,
+            "last_active_at": now,
+            "runtime": "python3.13",
+            "vcpus": 2,
+            "memory_mb": 4096,
+        }
+
+        assert store.try_claim_create(record) is True
+        assert store.try_claim_create(record) is False
+
+        loaded = store.load("vercel-claim")
+        assert loaded is not None
+        assert loaded["status"] == "creating"
+        assert loaded["vercel_sandbox_id"] == ""
+    finally:
+        asyncio.run(close_engine())

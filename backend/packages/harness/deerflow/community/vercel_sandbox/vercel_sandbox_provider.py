@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import atexit
 import hashlib
-import json
 import logging
 import os
 import signal
@@ -21,10 +20,12 @@ except ImportError:  # pragma: no cover - Windows fallback
 
 from deerflow.config import get_app_config
 from deerflow.config.paths import get_paths
+from deerflow.persistence.engine import get_session_factory
 from deerflow.runtime.user_context import get_effective_user_id
 from deerflow.sandbox.sandbox import Sandbox
 from deerflow.sandbox.sandbox_provider import SandboxProvider
 
+from .record_store import DatabaseVercelSandboxRecordStore, FileVercelSandboxRecordStore, VercelSandboxRecordStore
 from .vercel_sandbox import VercelSandbox
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,7 @@ DEFAULT_VCPUS = 2
 DEFAULT_MEMORY_MB = DEFAULT_VCPUS * 2048
 DEFAULT_MAX_SYNC_FILE_BYTES = 100 * 1024 * 1024
 DEFAULT_STOP_ON_RELEASE = True
+DEFAULT_RECORD_CLAIM_TIMEOUT_S = 60.0
 
 
 def _lock_file_exclusive(lock_file) -> None:
@@ -117,9 +119,10 @@ class VercelSandboxProvider(SandboxProvider):
     """Sandbox provider that runs DeerFlow thread workspaces in Vercel Sandbox.
 
     DeerFlow keeps a deterministic per-thread sandbox id and persists the
-    provider-owned Vercel sandbox id in thread metadata. This separates business
-    session identity from the external provider's resource identity and lets a
-    stopped persistent Vercel sandbox be resumed across turns.
+    provider-owned Vercel sandbox id in the app database when available,
+    falling back to per-thread JSON for local development. This separates
+    business session identity from the external provider's resource identity
+    and lets a stopped persistent Vercel sandbox be resumed across turns.
     """
 
     uses_thread_data_mounts = False
@@ -134,6 +137,9 @@ class VercelSandboxProvider(SandboxProvider):
         self._last_activity: dict[str, float] = {}
         self._shutdown_called = False
         self._config = self._load_config()
+        self._file_record_store = FileVercelSandboxRecordStore(self._record_path)
+        self._db_record_store: DatabaseVercelSandboxRecordStore | None = None
+        self._db_record_store_session_factory: Any | None = None
 
         atexit.register(self.shutdown)
         self._register_signal_handlers()
@@ -214,11 +220,8 @@ class VercelSandboxProvider(SandboxProvider):
             finally:
                 sandbox.close()
 
-        if record and record.thread_id:
-            try:
-                self._record_path(record.thread_id, record.user_id, sandbox_id).unlink(missing_ok=True)
-            except OSError as exc:
-                logger.warning("Failed to remove Vercel sandbox record for %s: %s", sandbox_id, exc)
+        if record is not None:
+            self._delete_record(record)
 
     def shutdown(self) -> None:
         with self._lock:
@@ -254,6 +257,10 @@ class VercelSandboxProvider(SandboxProvider):
         env = _resolve_env_vars(getattr(sandbox_config, "environment", None) or {})
         env.update(_resolve_env_vars(getattr(sandbox_config, "vercel_environment", None) or {}))
 
+        record_store = (getattr(sandbox_config, "vercel_record_store", None) or "auto").lower()
+        if record_store not in {"auto", "database", "file"}:
+            raise ValueError("sandbox.vercel_record_store must be one of: auto, database, file")
+
         return {
             "token": _resolve_env_value(getattr(sandbox_config, "vercel_token", None)),
             "project_id": _resolve_env_value(getattr(sandbox_config, "vercel_project_id", None)),
@@ -268,6 +275,8 @@ class VercelSandboxProvider(SandboxProvider):
             "environment": env,
             "max_sync_file_bytes": (getattr(sandbox_config, "vercel_sync_max_file_bytes", None) or DEFAULT_MAX_SYNC_FILE_BYTES),
             "stop_on_release": bool(getattr(sandbox_config, "vercel_stop_on_release", DEFAULT_STOP_ON_RELEASE)),
+            "record_store": record_store,
+            "record_claim_timeout_s": float(getattr(sandbox_config, "vercel_record_claim_timeout_s", None) or DEFAULT_RECORD_CLAIM_TIMEOUT_S),
         }
 
     @staticmethod
@@ -328,7 +337,7 @@ class VercelSandboxProvider(SandboxProvider):
                     return cached_id
 
                 record = self._load_record(thread_id, user_id, sandbox_id)
-                if record is not None:
+                if record is not None and record.vercel_sandbox_id:
                     try:
                         client = self._get_vercel_sandbox(record.vercel_sandbox_id)
                         return self._register_sandbox(thread_id, sandbox_id, user_id=user_id, client=client, record=record)
@@ -339,8 +348,30 @@ class VercelSandboxProvider(SandboxProvider):
                             sandbox_id,
                             exc,
                         )
+                        self._delete_record(record)
+                        record = None
 
-                return self._create_and_register(thread_id, sandbox_id, user_id=user_id, record=record)
+                if record is not None and not record.vercel_sandbox_id:
+                    ready_record = self._wait_for_ready_record(thread_id, user_id, sandbox_id)
+                    if ready_record is not None and ready_record.vercel_sandbox_id:
+                        client = self._get_vercel_sandbox(ready_record.vercel_sandbox_id)
+                        return self._register_sandbox(thread_id, sandbox_id, user_id=user_id, client=client, record=ready_record)
+                    raise RuntimeError(f"Timed out waiting for Vercel sandbox creation claim for DeerFlow sandbox {sandbox_id}")
+
+                pending_record = self._pending_record(thread_id, sandbox_id, user_id=user_id, previous=record)
+                claimed = self._try_claim_record(pending_record)
+                if not claimed:
+                    ready_record = self._wait_for_ready_record(thread_id, user_id, sandbox_id)
+                    if ready_record is not None and ready_record.vercel_sandbox_id:
+                        client = self._get_vercel_sandbox(ready_record.vercel_sandbox_id)
+                        return self._register_sandbox(thread_id, sandbox_id, user_id=user_id, client=client, record=ready_record)
+                    raise RuntimeError(f"Timed out waiting for Vercel sandbox record for DeerFlow sandbox {sandbox_id}")
+
+                try:
+                    return self._create_and_register(thread_id, sandbox_id, user_id=user_id, record=pending_record)
+                except Exception:
+                    self._delete_record(pending_record)
+                    raise
             finally:
                 if locked:
                     _unlock_file(lock_file)
@@ -452,23 +483,74 @@ class VercelSandboxProvider(SandboxProvider):
     def _record_path(self, thread_id: str, user_id: str | None, sandbox_id: str) -> Path:
         return get_paths().thread_dir(thread_id, user_id=user_id) / f"{sandbox_id}.vercel-sandbox.json"
 
+    def _record_store(self) -> VercelSandboxRecordStore:
+        mode = self._config["record_store"]
+        if mode in {"auto", "database"}:
+            session_factory = get_session_factory()
+            if session_factory is not None:
+                if self._db_record_store is None or self._db_record_store_session_factory is not session_factory:
+                    self._db_record_store = DatabaseVercelSandboxRecordStore(session_factory)
+                    self._db_record_store_session_factory = session_factory
+                return self._db_record_store
+            if mode == "database":
+                raise RuntimeError("sandbox.vercel_record_store=database requires the DeerFlow persistence engine. Set database.backend to sqlite/postgres and initialize the Gateway before acquiring sandboxes.")
+        return self._file_record_store
+
     def _load_record(self, thread_id: str, user_id: str, sandbox_id: str) -> VercelSandboxRecord | None:
-        path = self._record_path(thread_id, user_id, sandbox_id)
-        if not path.exists():
+        store = self._record_store()
+        if isinstance(store, FileVercelSandboxRecordStore):
+            data = store.load_for_thread(thread_id, user_id, sandbox_id)
+        else:
+            data = store.load(sandbox_id)
+        if data is None:
             return None
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
             return VercelSandboxRecord.from_dict(data)
         except Exception as exc:
-            logger.warning("Failed to read Vercel sandbox record %s: %s", path, exc)
+            logger.warning("Failed to parse Vercel sandbox record for %s: %s", sandbox_id, exc)
             return None
 
     def _persist_record(self, record: VercelSandboxRecord) -> None:
         if record.thread_id is None:
             return
-        path = self._record_path(record.thread_id, record.user_id, record.sandbox_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(asdict(record), indent=2, sort_keys=True), encoding="utf-8")
+        self._record_store().save(asdict(record))
+
+    def _delete_record(self, record: VercelSandboxRecord) -> None:
+        self._record_store().delete(asdict(record))
+
+    def _try_claim_record(self, record: VercelSandboxRecord) -> bool:
+        return self._record_store().try_claim_create(asdict(record))
+
+    def _pending_record(
+        self,
+        thread_id: str,
+        sandbox_id: str,
+        *,
+        user_id: str,
+        previous: VercelSandboxRecord | None,
+    ) -> VercelSandboxRecord:
+        now = time.time()
+        return VercelSandboxRecord(
+            sandbox_id=sandbox_id,
+            vercel_sandbox_id="",
+            thread_id=thread_id,
+            user_id=user_id,
+            status="creating",
+            created_at=previous.created_at if previous is not None else now,
+            last_active_at=now,
+            runtime=self._config["runtime"],
+            vcpus=self._config["vcpus"],
+            memory_mb=self._config["memory_mb"],
+        )
+
+    def _wait_for_ready_record(self, thread_id: str, user_id: str, sandbox_id: str) -> VercelSandboxRecord | None:
+        deadline = time.monotonic() + self._config["record_claim_timeout_s"]
+        while time.monotonic() < deadline:
+            time.sleep(0.25)
+            record = self._load_record(thread_id, user_id, sandbox_id)
+            if record is not None and record.vercel_sandbox_id:
+                return record
+        return None
 
     def _register_signal_handlers(self) -> None:
         self._original_sigterm = signal.getsignal(signal.SIGTERM)

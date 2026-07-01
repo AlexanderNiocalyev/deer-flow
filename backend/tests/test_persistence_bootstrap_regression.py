@@ -31,6 +31,7 @@ from deerflow.persistence.engine import close_engine, get_session_factory, init_
 from deerflow.persistence.run import RunRepository
 
 pytestmark = pytest.mark.asyncio
+CURRENT_SCHEMA_HEAD = "0003_runtime_bindings"
 
 
 def _seed_pre_3658_database(db_path: Path) -> None:
@@ -75,8 +76,10 @@ async def test_legacy_database_recovers_token_usage_column(tmp_path: Path) -> No
         with sqlite3.connect(db_path) as raw:
             cols = {row[1] for row in raw.execute("PRAGMA table_info(runs)").fetchall()}
             assert "token_usage_by_model" in cols
+            tables = {row[0] for row in raw.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+            assert "runtime_bindings" in tables
             version_row = raw.execute("SELECT version_num FROM alembic_version").fetchone()
-            assert version_row[0] == "0002_runs_token_usage"
+            assert version_row[0] == CURRENT_SCHEMA_HEAD
 
         # And the read path that originally 500'd must now succeed.
         sf = get_session_factory()
@@ -115,7 +118,9 @@ async def test_legacy_database_with_manual_alter_still_bootstraps(tmp_path: Path
             cols = [row[1] for row in raw.execute("PRAGMA table_info(runs)").fetchall()]
             # No duplicate column -- list, not set, to catch dupes.
             assert cols.count("token_usage_by_model") == 1
+            tables = {row[0] for row in raw.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+            assert "runtime_bindings" in tables
             version_row = raw.execute("SELECT version_num FROM alembic_version").fetchone()
-            assert version_row[0] == "0002_runs_token_usage"
+            assert version_row[0] == CURRENT_SCHEMA_HEAD
     finally:
         await close_engine()
