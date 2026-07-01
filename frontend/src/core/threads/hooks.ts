@@ -17,6 +17,7 @@ import type { PromptInputMessage } from "@/components/ai-elements/prompt-input";
 import { getAPIClient } from "../api";
 import { fetch } from "../api/fetcher";
 import { getBackendBaseURL } from "../config";
+import { getOrpheusEmbedContext } from "../embed-auth";
 import { useI18n } from "../i18n/hooks";
 import { isHiddenFromUIMessage } from "../messages/utils";
 import type { FileInMessage } from "../messages/utils";
@@ -43,6 +44,16 @@ export type ToolEndEvent = {
   name: string;
   data: unknown;
 };
+
+function orpheusEmbedMetadata(): Record<string, string | boolean> {
+  const embedContext = getOrpheusEmbedContext();
+  return embedContext
+    ? {
+        ...embedContext,
+        orpheus_embed: true,
+      }
+    : {};
+}
 
 export type ThreadStreamOptions = {
   threadId?: string | null | undefined;
@@ -1249,11 +1260,13 @@ export function useThreadStream({
             threadId: threadId,
             streamSubgraphs: true,
             streamResumable: true,
+            metadata: orpheusEmbedMetadata(),
             config: {
               recursion_limit: 1000,
             },
             context: {
               ...extraContext,
+              ...orpheusEmbedMetadata(),
               ...context,
               thinking_enabled: context.mode !== "flash",
               is_plan_mode: context.mode === "pro" || context.mode === "ultra",
@@ -1352,13 +1365,17 @@ export function useThreadStream({
         await thread.submit(prepared.input, {
           threadId,
           checkpoint: prepared.checkpoint,
-          metadata: prepared.metadata,
+          metadata: {
+            ...prepared.metadata,
+            ...orpheusEmbedMetadata(),
+          },
           streamSubgraphs: true,
           streamResumable: true,
           config: {
             recursion_limit: 1000,
           },
           context: {
+            ...orpheusEmbedMetadata(),
             ...context,
             thinking_enabled: context.mode !== "flash",
             is_plan_mode: context.mode === "pro" || context.mode === "ultra",

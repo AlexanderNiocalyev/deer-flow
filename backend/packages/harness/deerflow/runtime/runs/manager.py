@@ -483,6 +483,12 @@ class RunManager:
                 record.error = error
         await self._persist_status(record, status, error=error)
         logger.info("Run %s -> %s", run_id, status.value)
+        try:
+            from deerflow.integrations.orpheus_mirror import schedule_orpheus_mirror
+
+            schedule_orpheus_mirror(record)
+        except Exception:
+            logger.debug("Failed to schedule Orpheus mirror callback for run %s", run_id, exc_info=True)
 
     async def _persist_model_name(self, run_id: str, model_name: str | None) -> None:
         """Best-effort persist model_name update to the backing store."""
@@ -538,6 +544,12 @@ class RunManager:
             record.updated_at = _now_iso()
         await self._persist_status(record, RunStatus.interrupted)
         logger.info("Run %s cancelled (action=%s)", run_id, action)
+        try:
+            from deerflow.integrations.orpheus_mirror import schedule_orpheus_mirror
+
+            schedule_orpheus_mirror(record)
+        except Exception:
+            logger.debug("Failed to schedule Orpheus mirror callback for run %s", run_id, exc_info=True)
         return True
 
     async def create_or_reject(

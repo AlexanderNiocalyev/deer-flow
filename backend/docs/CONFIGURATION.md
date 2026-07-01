@@ -31,6 +31,20 @@ accepts the token as `auth_source=embed` only when the signature, expiry,
 issuer/audience, and requested thread id all match. CSRF double-submit checks are
 skipped only for requests carrying a valid embed token.
 
+For Orpheus to mirror DeerFlow run status, events, and artifacts, configure the
+Gateway with the Orpheus internal callback endpoint and a shared secret:
+
+```bash
+ORPHEUS_AGENT_WORKSPACE_CALLBACK_URL=https://<orpheus>/internal/agent-workspace/deerflow-callbacks
+ORPHEUS_AGENT_WORKSPACE_CALLBACK_TOKEN=use-the-same-token-in-orpheus
+# Optional, used to build clickable artifact URLs in Orpheus.
+DEERFLOW_PUBLIC_BASE_URL=https://<deerflow-frontend-or-gateway-origin>
+```
+
+The embed route receives `orpheus_session_id` and `orpheus_workspace_id` from
+Orpheus, forwards them in run metadata/context, and the Gateway callback client
+uses those values to update the matching Orpheus Agent Workspace session.
+
 ## Configuration Sections
 
 ### Models
