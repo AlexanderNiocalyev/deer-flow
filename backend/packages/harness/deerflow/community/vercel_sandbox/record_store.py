@@ -24,14 +24,26 @@ class VercelSandboxRecordStore(Protocol):
     def load(self, sandbox_id: str) -> dict[str, Any] | None:
         """Load a serialized Vercel sandbox record."""
 
+    async def aload(self, sandbox_id: str) -> dict[str, Any] | None:
+        """Async load variant used by async tool execution paths."""
+
     def save(self, record: dict[str, Any]) -> None:
         """Persist a serialized Vercel sandbox record."""
+
+    async def asave(self, record: dict[str, Any]) -> None:
+        """Async save variant used by async tool execution paths."""
 
     def delete(self, record: dict[str, Any]) -> None:
         """Delete a serialized Vercel sandbox record."""
 
+    async def adelete(self, record: dict[str, Any]) -> None:
+        """Async delete variant used by async tool execution paths."""
+
     def try_claim_create(self, record: dict[str, Any]) -> bool:
         """Claim ownership of creating a provider sandbox for this record."""
+
+    async def atry_claim_create(self, record: dict[str, Any]) -> bool:
+        """Async claim variant used by async tool execution paths."""
 
 
 def _run_async_sync[T](factory: Callable[[], Any]) -> T:
@@ -89,6 +101,9 @@ class FileVercelSandboxRecordStore:
         # using ``load_for_thread`` for this store.
         return None
 
+    async def aload(self, sandbox_id: str) -> dict[str, Any] | None:
+        return await asyncio.to_thread(self.load, sandbox_id)
+
     def load_for_thread(self, thread_id: str, user_id: str | None, sandbox_id: str) -> dict[str, Any] | None:
         path = self._record_path(thread_id, user_id, sandbox_id)
         if not path.exists():
@@ -106,6 +121,9 @@ class FileVercelSandboxRecordStore:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(record, indent=2, sort_keys=True), encoding="utf-8")
 
+    async def asave(self, record: dict[str, Any]) -> None:
+        await asyncio.to_thread(self.save, record)
+
     def delete(self, record: dict[str, Any]) -> None:
         path = self._path_for_record(record)
         if path is None:
@@ -115,8 +133,14 @@ class FileVercelSandboxRecordStore:
         except OSError as exc:
             logger.warning("Failed to remove Vercel sandbox record %s: %s", path, exc)
 
+    async def adelete(self, record: dict[str, Any]) -> None:
+        await asyncio.to_thread(self.delete, record)
+
     def try_claim_create(self, record: dict[str, Any]) -> bool:
         return True
+
+    async def atry_claim_create(self, record: dict[str, Any]) -> bool:
+        return await asyncio.to_thread(self.try_claim_create, record)
 
 
 class DatabaseVercelSandboxRecordStore:
@@ -126,14 +150,26 @@ class DatabaseVercelSandboxRecordStore:
     def load(self, sandbox_id: str) -> dict[str, Any] | None:
         return _run_async_sync(lambda: self._load(sandbox_id))
 
+    async def aload(self, sandbox_id: str) -> dict[str, Any] | None:
+        return await self._load(sandbox_id)
+
     def save(self, record: dict[str, Any]) -> None:
         _run_async_sync(lambda: self._save(record))
+
+    async def asave(self, record: dict[str, Any]) -> None:
+        await self._save(record)
 
     def delete(self, record: dict[str, Any]) -> None:
         _run_async_sync(lambda: self._delete(str(record["sandbox_id"])))
 
+    async def adelete(self, record: dict[str, Any]) -> None:
+        await self._delete(str(record["sandbox_id"]))
+
     def try_claim_create(self, record: dict[str, Any]) -> bool:
         return _run_async_sync(lambda: self._try_claim_create(record))
+
+    async def atry_claim_create(self, record: dict[str, Any]) -> bool:
+        return await self._try_claim_create(record)
 
     async def _load(self, sandbox_id: str) -> dict[str, Any] | None:
         async with self._sf() as session:

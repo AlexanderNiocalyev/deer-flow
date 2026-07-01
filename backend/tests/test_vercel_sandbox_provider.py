@@ -7,6 +7,8 @@ import time
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from deerflow.community.vercel_sandbox.record_store import DatabaseVercelSandboxRecordStore
 from deerflow.community.vercel_sandbox.vercel_sandbox import VercelSandbox
 from deerflow.config.paths import Paths
@@ -249,6 +251,73 @@ def test_vercel_provider_uses_database_record_store_when_configured(tmp_path, mo
         restarted_provider.release(reacquired_id)
     finally:
         asyncio.run(close_engine())
+
+
+@pytest.mark.asyncio
+async def test_vercel_provider_async_database_record_store_uses_current_loop(tmp_path, monkeypatch):
+    import deerflow.community.vercel_sandbox.vercel_sandbox as sandbox_mod
+    import deerflow.community.vercel_sandbox.vercel_sandbox_provider as provider_mod
+    from deerflow.persistence.engine import close_engine, get_session_factory, init_engine
+
+    async def load_binding(sandbox_id: str) -> RuntimeBindingRow | None:
+        sf = get_session_factory()
+        async with sf() as session:
+            return await session.get(RuntimeBindingRow, f"vercel:{sandbox_id}")
+
+    await close_engine()
+    await init_engine(
+        "sqlite",
+        url=f"sqlite+aiosqlite:///{tmp_path / 'async.db'}",
+        sqlite_dir=str(tmp_path),
+    )
+
+    try:
+        paths = Paths(base_dir=tmp_path)
+        paths.ensure_thread_dirs("thread-async-db", user_id="user-async-db")
+
+        sandbox_cfg = SimpleNamespace(
+            environment={},
+            vercel_environment={},
+            vercel_vcpus=2,
+            vercel_memory_mb=4096,
+            vercel_runtime="python3.13",
+            vercel_stop_on_release=True,
+            vercel_record_store="database",
+        )
+        monkeypatch.setattr(provider_mod, "get_app_config", lambda: SimpleNamespace(sandbox=sandbox_cfg))
+        monkeypatch.setattr(provider_mod, "get_paths", lambda: paths)
+        monkeypatch.setattr(sandbox_mod, "get_paths", lambda: paths)
+        monkeypatch.setattr(provider_mod.VercelSandboxProvider, "_register_signal_handlers", lambda self: None)
+
+        remote_clients: dict[str, FakeVercelClient] = {}
+        created: list[str] = []
+
+        def fake_create(self):
+            remote_id = f"sbx_async_{len(created) + 1}"
+            created.append(remote_id)
+            client = FakeVercelClient(remote_id)
+            remote_clients[remote_id] = client
+            return client
+
+        monkeypatch.setattr(provider_mod.VercelSandboxProvider, "_create_vercel_sandbox", fake_create)
+
+        provider = provider_mod.VercelSandboxProvider()
+        sandbox_id = await provider.acquire_async("thread-async-db", user_id="user-async-db")
+
+        binding = await load_binding(sandbox_id)
+        assert binding is not None
+        assert binding.provider_sandbox_id == "sbx_async_1"
+        assert binding.status == "running"
+
+        await provider.release_async(sandbox_id)
+
+        binding = await load_binding(sandbox_id)
+        assert binding is not None
+        assert binding.status == "stopped"
+        assert binding.stopped_at is not None
+        assert remote_clients["sbx_async_1"].stopped is True
+    finally:
+        await close_engine()
 
 
 def test_vercel_provider_releases_thread_from_database_record_after_restart(tmp_path, monkeypatch):

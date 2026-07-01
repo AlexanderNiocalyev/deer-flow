@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import atexit
+import asyncio
 import hashlib
 import logging
 import os
@@ -152,6 +153,17 @@ class VercelSandboxProvider(SandboxProvider):
                 return self._acquire_internal(thread_id, user_id=effective_user_id)
         return self._acquire_internal(thread_id, user_id=effective_user_id)
 
+    async def acquire_async(self, thread_id: str | None = None, *, user_id: str | None = None) -> str:
+        effective_user_id = self._effective_acquire_user_id(user_id)
+        if thread_id:
+            thread_lock = self._get_thread_lock(thread_id, effective_user_id)
+            await asyncio.to_thread(thread_lock.acquire)
+            try:
+                return await self._acquire_internal_async(thread_id, user_id=effective_user_id)
+            finally:
+                thread_lock.release()
+        return await self._acquire_internal_async(thread_id, user_id=effective_user_id)
+
     def get(self, sandbox_id: str) -> Sandbox | None:
         with self._lock:
             sandbox = self._sandboxes.get(sandbox_id)
@@ -191,6 +203,46 @@ class VercelSandboxProvider(SandboxProvider):
                 record.last_active_at = time.time()
                 self._persist_record(record)
             sandbox.close()
+
+        logger.info("Released Vercel sandbox %s", sandbox_id)
+
+    async def release_async(self, sandbox_id: str) -> None:
+        record_store = self._record_store()
+        if not isinstance(record_store, DatabaseVercelSandboxRecordStore):
+            await asyncio.to_thread(self.release, sandbox_id)
+            return
+
+        sandbox: VercelSandbox | None = None
+        record: VercelSandboxRecord | None = None
+        with self._lock:
+            sandbox = self._sandboxes.pop(sandbox_id, None)
+            record = self._records.get(sandbox_id)
+            self._last_activity.pop(sandbox_id, None)
+
+        if sandbox is None:
+            logger.info("Vercel sandbox %s is not active; nothing to release", sandbox_id)
+            return
+
+        try:
+            await asyncio.to_thread(sandbox.sync_to_host)
+        except Exception as exc:
+            logger.warning("Failed to sync Vercel sandbox %s to host during release: %s", sandbox_id, exc)
+
+        try:
+            if self._config["stop_on_release"]:
+                await asyncio.to_thread(sandbox.stop, blocking=False)
+                if record is not None:
+                    record.status = "stopped"
+                    record.stopped_at = time.time()
+            elif record is not None:
+                record.status = "running"
+        except Exception as exc:
+            logger.warning("Failed to stop Vercel sandbox %s during release: %s", sandbox_id, exc)
+        finally:
+            if record is not None:
+                record.last_active_at = time.time()
+                await self._persist_record_async(record)
+            await asyncio.to_thread(sandbox.close)
 
         logger.info("Released Vercel sandbox %s", sandbox_id)
 
@@ -248,6 +300,31 @@ class VercelSandboxProvider(SandboxProvider):
                     )
                 finally:
                     _unlock_file(lock_file)
+
+    async def release_thread_async(self, thread_id: str, *, user_id: str | None = None, reason: str | None = None) -> dict[str, Any]:
+        """Async counterpart used by FastAPI request handlers.
+
+        Database-backed bindings must stay on the request event loop because
+        SQLAlchemy/asyncpg pools are loop-bound. File-backed local development
+        keeps using the existing synchronous implementation in a worker thread.
+        """
+        if not isinstance(self._record_store(), DatabaseVercelSandboxRecordStore):
+            return await asyncio.to_thread(self.release_thread, thread_id, user_id=user_id, reason=reason)
+
+        effective_user_id = self._effective_acquire_user_id(user_id)
+        sandbox_id = self._sandbox_id_for_thread(thread_id, effective_user_id)
+        thread_lock = self._get_thread_lock(thread_id, effective_user_id)
+        await asyncio.to_thread(thread_lock.acquire)
+        try:
+            await asyncio.to_thread(get_paths().ensure_thread_dirs, thread_id, user_id=effective_user_id)
+            return await self._release_thread_locked_async(
+                thread_id,
+                sandbox_id,
+                user_id=effective_user_id,
+                reason=reason,
+            )
+        finally:
+            thread_lock.release()
 
     def shutdown(self) -> None:
         with self._lock:
@@ -402,6 +479,58 @@ class VercelSandboxProvider(SandboxProvider):
                 if locked:
                     _unlock_file(lock_file)
 
+    async def _acquire_internal_async(self, thread_id: str | None, *, user_id: str) -> str:
+        record_store = self._record_store()
+        if not isinstance(record_store, DatabaseVercelSandboxRecordStore):
+            return await asyncio.to_thread(self._acquire_internal, thread_id, user_id=user_id)
+
+        cached_id = await asyncio.to_thread(self._reuse_in_process_sandbox, thread_id, user_id=user_id)
+        if cached_id is not None:
+            return cached_id
+
+        sandbox_id = self._sandbox_id_for_thread(thread_id, user_id)
+        if thread_id is None:
+            return await self._create_and_register_async(None, sandbox_id, user_id=user_id, record=None)
+
+        await asyncio.to_thread(get_paths().ensure_thread_dirs, thread_id, user_id=user_id)
+
+        record = await self._load_record_async(thread_id, user_id, sandbox_id)
+        if record is not None and record.vercel_sandbox_id:
+            try:
+                client = await asyncio.to_thread(self._get_vercel_sandbox, record.vercel_sandbox_id)
+                return await self._register_sandbox_async(thread_id, sandbox_id, user_id=user_id, client=client, record=record)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to resume Vercel sandbox %s for DeerFlow sandbox %s; creating a new sandbox: %s",
+                    record.vercel_sandbox_id,
+                    sandbox_id,
+                    exc,
+                )
+                await self._delete_record_async(record)
+                record = None
+
+        if record is not None and not record.vercel_sandbox_id:
+            ready_record = await self._wait_for_ready_record_async(thread_id, user_id, sandbox_id)
+            if ready_record is not None and ready_record.vercel_sandbox_id:
+                client = await asyncio.to_thread(self._get_vercel_sandbox, ready_record.vercel_sandbox_id)
+                return await self._register_sandbox_async(thread_id, sandbox_id, user_id=user_id, client=client, record=ready_record)
+            raise RuntimeError(f"Timed out waiting for Vercel sandbox creation claim for DeerFlow sandbox {sandbox_id}")
+
+        pending_record = self._pending_record(thread_id, sandbox_id, user_id=user_id, previous=record)
+        claimed = await self._try_claim_record_async(pending_record)
+        if not claimed:
+            ready_record = await self._wait_for_ready_record_async(thread_id, user_id, sandbox_id)
+            if ready_record is not None and ready_record.vercel_sandbox_id:
+                client = await asyncio.to_thread(self._get_vercel_sandbox, ready_record.vercel_sandbox_id)
+                return await self._register_sandbox_async(thread_id, sandbox_id, user_id=user_id, client=client, record=ready_record)
+            raise RuntimeError(f"Timed out waiting for Vercel sandbox record for DeerFlow sandbox {sandbox_id}")
+
+        try:
+            return await self._create_and_register_async(thread_id, sandbox_id, user_id=user_id, record=pending_record)
+        except Exception:
+            await self._delete_record_async(pending_record)
+            raise
+
     def _create_and_register(
         self,
         thread_id: str | None,
@@ -427,6 +556,31 @@ class VercelSandboxProvider(SandboxProvider):
         )
         return self._register_sandbox(thread_id, sandbox_id, user_id=user_id, client=client, record=new_record)
 
+    async def _create_and_register_async(
+        self,
+        thread_id: str | None,
+        sandbox_id: str,
+        *,
+        user_id: str,
+        record: VercelSandboxRecord | None,
+    ) -> str:
+        client = await asyncio.to_thread(self._create_vercel_sandbox)
+        remote_id = self._remote_sandbox_id(client)
+        now = time.time()
+        new_record = VercelSandboxRecord(
+            sandbox_id=sandbox_id,
+            vercel_sandbox_id=remote_id,
+            thread_id=thread_id,
+            user_id=user_id,
+            status="running",
+            created_at=record.created_at if record is not None else now,
+            last_active_at=now,
+            runtime=self._config["runtime"],
+            vcpus=self._config["vcpus"],
+            memory_mb=self._config["memory_mb"],
+        )
+        return await self._register_sandbox_async(thread_id, sandbox_id, user_id=user_id, client=client, record=new_record)
+
     def _register_sandbox(
         self,
         thread_id: str | None,
@@ -435,6 +589,7 @@ class VercelSandboxProvider(SandboxProvider):
         user_id: str,
         client: Any,
         record: VercelSandboxRecord,
+        persist: bool = True,
     ) -> str:
         sandbox = VercelSandbox(
             id=sandbox_id,
@@ -459,14 +614,36 @@ class VercelSandboxProvider(SandboxProvider):
             if thread_id:
                 self._thread_sandboxes[self._thread_key(thread_id, user_id)] = sandbox_id
 
-        self._persist_record(record)
         logger.info(
             "Acquired Vercel sandbox %s for DeerFlow sandbox %s thread %s",
             record.vercel_sandbox_id,
             sandbox_id,
             thread_id,
         )
+        if persist:
+            self._persist_record(record)
         return sandbox_id
+
+    async def _register_sandbox_async(
+        self,
+        thread_id: str | None,
+        sandbox_id: str,
+        *,
+        user_id: str,
+        client: Any,
+        record: VercelSandboxRecord,
+    ) -> str:
+        result = await asyncio.to_thread(
+            self._register_sandbox,
+            thread_id,
+            sandbox_id,
+            user_id=user_id,
+            client=client,
+            record=record,
+            persist=False,
+        )
+        await self._persist_record_async(record)
+        return result
 
     def _create_vercel_sandbox(self):
         VercelSDKSandbox, Resources = _load_vercel_sdk()
@@ -579,6 +756,92 @@ class VercelSandboxProvider(SandboxProvider):
         finally:
             sandbox.close()
 
+    async def _release_thread_locked_async(
+        self,
+        thread_id: str,
+        sandbox_id: str,
+        *,
+        user_id: str,
+        reason: str | None,
+    ) -> dict[str, Any]:
+        with self._lock:
+            active_sandbox = self._sandboxes.get(sandbox_id)
+
+        if active_sandbox is not None:
+            await self.release_async(sandbox_id)
+            return {
+                "status": "released",
+                "provider": "vercel",
+                "thread_id": thread_id,
+                "sandbox_id": sandbox_id,
+                "message": "Active Vercel sandbox released.",
+                "reason": reason,
+            }
+
+        record = await self._load_record_async(thread_id, user_id, sandbox_id)
+        if record is None:
+            return {
+                "status": "not_found",
+                "provider": "vercel",
+                "thread_id": thread_id,
+                "sandbox_id": sandbox_id,
+                "message": "No Vercel sandbox record exists for this thread.",
+                "reason": reason,
+            }
+
+        if not record.vercel_sandbox_id:
+            return {
+                "status": "creating",
+                "provider": "vercel",
+                "thread_id": thread_id,
+                "sandbox_id": sandbox_id,
+                "message": "Vercel sandbox creation is still claimed by another worker.",
+                "reason": reason,
+            }
+
+        if record.status == "stopped":
+            return {
+                "status": "already_stopped",
+                "provider": "vercel",
+                "thread_id": thread_id,
+                "sandbox_id": sandbox_id,
+                "vercel_sandbox_id": record.vercel_sandbox_id,
+                "message": "Vercel sandbox is already stopped.",
+                "reason": reason,
+            }
+
+        client = await asyncio.to_thread(self._get_vercel_sandbox, record.vercel_sandbox_id)
+        sandbox = VercelSandbox(
+            id=sandbox_id,
+            client=client,
+            thread_id=thread_id,
+            user_id=user_id,
+            paths=get_paths(),
+            max_sync_file_bytes=self._config["max_sync_file_bytes"],
+        )
+        try:
+            try:
+                await asyncio.to_thread(sandbox.sync_to_host)
+            except Exception as exc:
+                logger.warning("Failed to sync Vercel sandbox %s during thread release: %s", sandbox_id, exc)
+
+            await asyncio.to_thread(sandbox.stop, blocking=False)
+            record.status = "stopped"
+            record.stopped_at = time.time()
+            record.last_active_at = time.time()
+            await self._persist_record_async(record)
+            return {
+                "status": "released",
+                "provider": "vercel",
+                "thread_id": thread_id,
+                "sandbox_id": sandbox_id,
+                "vercel_sandbox_id": record.vercel_sandbox_id,
+                "message": "Recorded Vercel sandbox stopped.",
+                "reason": reason,
+            }
+        finally:
+            await asyncio.to_thread(sandbox.close)
+
     @staticmethod
     def _remote_sandbox_id(client: Any) -> str:
         sandbox_id = getattr(client, "sandbox_id", None)
@@ -622,16 +885,41 @@ class VercelSandboxProvider(SandboxProvider):
             logger.warning("Failed to parse Vercel sandbox record for %s: %s", sandbox_id, exc)
             return None
 
+    async def _load_record_async(self, thread_id: str, user_id: str, sandbox_id: str) -> VercelSandboxRecord | None:
+        store = self._record_store()
+        if isinstance(store, FileVercelSandboxRecordStore):
+            data = await asyncio.to_thread(store.load_for_thread, thread_id, user_id, sandbox_id)
+        else:
+            data = await store.aload(sandbox_id)
+        if data is None:
+            return None
+        try:
+            return VercelSandboxRecord.from_dict(data)
+        except Exception as exc:
+            logger.warning("Failed to parse Vercel sandbox record for %s: %s", sandbox_id, exc)
+            return None
+
     def _persist_record(self, record: VercelSandboxRecord) -> None:
         if record.thread_id is None:
             return
         self._record_store().save(asdict(record))
 
+    async def _persist_record_async(self, record: VercelSandboxRecord) -> None:
+        if record.thread_id is None:
+            return
+        await self._record_store().asave(asdict(record))
+
     def _delete_record(self, record: VercelSandboxRecord) -> None:
         self._record_store().delete(asdict(record))
 
+    async def _delete_record_async(self, record: VercelSandboxRecord) -> None:
+        await self._record_store().adelete(asdict(record))
+
     def _try_claim_record(self, record: VercelSandboxRecord) -> bool:
         return self._record_store().try_claim_create(asdict(record))
+
+    async def _try_claim_record_async(self, record: VercelSandboxRecord) -> bool:
+        return await self._record_store().atry_claim_create(asdict(record))
 
     def _pending_record(
         self,
@@ -660,6 +948,15 @@ class VercelSandboxProvider(SandboxProvider):
         while time.monotonic() < deadline:
             time.sleep(0.25)
             record = self._load_record(thread_id, user_id, sandbox_id)
+            if record is not None and record.vercel_sandbox_id:
+                return record
+        return None
+
+    async def _wait_for_ready_record_async(self, thread_id: str, user_id: str, sandbox_id: str) -> VercelSandboxRecord | None:
+        deadline = time.monotonic() + self._config["record_claim_timeout_s"]
+        while time.monotonic() < deadline:
+            await asyncio.sleep(0.25)
+            record = await self._load_record_async(thread_id, user_id, sandbox_id)
             if record is not None and record.vercel_sandbox_id:
                 return record
         return None

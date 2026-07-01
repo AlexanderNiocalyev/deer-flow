@@ -50,8 +50,9 @@ async def release_thread_sandbox(
 
     owner_user_id = _require_internal_request(request)
     provider = get_sandbox_provider()
+    release_thread_async = getattr(provider, "release_thread_async", None)
     release_thread = getattr(provider, "release_thread", None)
-    if not callable(release_thread):
+    if not callable(release_thread_async) and not callable(release_thread):
         return ThreadSandboxReleaseResponse(
             status="skipped",
             provider=provider.__class__.__name__,
@@ -60,12 +61,15 @@ async def release_thread_sandbox(
             reason=body.reason,
         )
 
-    result = await asyncio.to_thread(
-        release_thread,
-        thread_id,
-        user_id=owner_user_id,
-        reason=body.reason,
-    )
+    if callable(release_thread_async):
+        result = await release_thread_async(thread_id, user_id=owner_user_id, reason=body.reason)
+    else:
+        result = await asyncio.to_thread(
+            release_thread,
+            thread_id,
+            user_id=owner_user_id,
+            reason=body.reason,
+        )
     if not isinstance(result, dict):
         raise HTTPException(status_code=500, detail="Sandbox provider returned an invalid lifecycle response.")
 
