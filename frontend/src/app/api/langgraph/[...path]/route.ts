@@ -29,7 +29,10 @@ export async function DELETE(request: Request, context: LangGraphRouteContext) {
   return proxyGatewayRequest(request, await gatewayPathname(context));
 }
 
-export async function OPTIONS(request: Request, context: LangGraphRouteContext) {
+export async function OPTIONS(
+  request: Request,
+  context: LangGraphRouteContext,
+) {
   return proxyGatewayRequest(request, await gatewayPathname(context));
 }
 

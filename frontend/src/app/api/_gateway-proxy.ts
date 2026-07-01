@@ -30,7 +30,10 @@ function normalizeGatewayPath(pathname: string) {
 
 export function buildGatewayURL(requestURL: string, gatewayPathname: string) {
   const incoming = new URL(requestURL);
-  const target = new URL(normalizeGatewayPath(gatewayPathname), getGatewayBaseURL());
+  const target = new URL(
+    normalizeGatewayPath(gatewayPathname),
+    getGatewayBaseURL(),
+  );
   target.search = incoming.search;
   return target;
 }
