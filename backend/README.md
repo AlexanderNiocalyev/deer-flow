@@ -33,6 +33,7 @@ DeerFlow is a LangGraph-based AI super agent with sandbox execution, persistent 
 - `/api/langgraph/*` → Gateway LangGraph-compatible API - agent interactions, threads, streaming
 - `/api/*` (other) → Gateway API - models, MCP, skills, memory, artifacts, uploads, thread-local cleanup
 - `/` (non-API) → Frontend - Next.js web interface
+- `/embed/chats/{thread_id}` → Frontend iframe route for Orpheus; API calls authenticate with `X-DeerFlow-Embed-Token`
 
 ---
 
@@ -69,12 +70,12 @@ Middlewares execute in strict order, each handling a specific concern:
 Per-thread isolated execution with virtual path translation:
 
 - **Abstract interface**: `execute_command`, `read_file`, `write_file`, `list_dir`
-- **Providers**: `LocalSandboxProvider` (filesystem) and `AioSandboxProvider` (Docker, in community/). Async runtime paths use async sandbox lifecycle hooks so startup, readiness polling, and release do not block the event loop. `AioSandboxProvider` validates active-cache and warm-pool containers during acquire/reuse, dropping definitively dead entries so a thread can provision a fresh sandbox after an unexpected container exit while keeping `get()` as an in-memory lookup. Backend health-check failures are treated as unknown, not dead, and a container that cannot be verified during discovery is simply not adopted (acquire falls through to create instead of failing).
+- **Providers**: `LocalSandboxProvider` (filesystem), `AioSandboxProvider` (Docker, in community/), and `VercelSandboxProvider` (Vercel Sandbox, in community/). Async runtime paths use async sandbox lifecycle hooks so startup, readiness polling, and release do not block the event loop. `AioSandboxProvider` validates active-cache and warm-pool containers during acquire/reuse, dropping definitively dead entries so a thread can provision a fresh sandbox after an unexpected container exit while keeping `get()` as an in-memory lookup. `VercelSandboxProvider` keeps DeerFlow's deterministic per-thread sandbox id separate from the Vercel sandbox id, persists that mapping in `runtime_bindings` when the app database is available, syncs host thread data into Vercel on acquire, mirrors `/mnt/user-data/*` writes back to the host for artifact delivery, and stops persistent sandboxes on release by default so they can snapshot while idle.
 - **Virtual paths**: `/mnt/user-data/{workspace,uploads,outputs}` → thread-specific physical directories
 - **Skills path**: `/mnt/skills` → `deer-flow/skills/` directory
 - **Skills loading**: Recursively discovers nested `SKILL.md` files under `skills/{public,custom}` and preserves nested container paths
 - **File-write safety**: `str_replace` serializes read-modify-write per `(sandbox.id, path)` so isolated sandboxes keep concurrency even when virtual paths match
-- **Tools**: `bash`, `ls`, `read_file`, `write_file`, `str_replace` (`write_file` overwrites by default and exposes `append` for end-of-file writes; `bash` is disabled by default when using `LocalSandboxProvider`; use `AioSandboxProvider` for isolated shell access)
+- **Tools**: `bash`, `ls`, `read_file`, `write_file`, `str_replace` (`write_file` overwrites by default and exposes `append` for end-of-file writes; `bash` is disabled by default when using `LocalSandboxProvider`; use `AioSandboxProvider` or `VercelSandboxProvider` for isolated shell access)
 
 ### Subagent System
 

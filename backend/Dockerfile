@@ -50,6 +50,12 @@ COPY backend ./backend
 RUN --mount=type=cache,target=/root/.cache/uv \
     sh -c "cd backend && UV_INDEX_URL=${UV_INDEX_URL:-https://pypi.org/simple} uv sync ${UV_EXTRAS:+--extra $UV_EXTRAS}"
 
+# Cloud Run has no host bind mounts, so production images need the built-in
+# skills and deploy-time config templates baked into the image.
+COPY skills ./skills
+COPY ops ./ops
+COPY extensions_config.example.json ./extensions_config.example.json
+
 # UTF-8 locale prevents UnicodeEncodeError on Chinese/emoji content in minimal
 # containers where locale configuration may be missing and the default encoding is not UTF-8.
 ENV LANG=C.UTF-8
@@ -93,6 +99,9 @@ WORKDIR /app
 
 # Copy backend with pre-built virtualenv from builder
 COPY --from=builder /app/backend ./backend
+COPY --from=builder /app/skills ./skills
+COPY --from=builder /app/ops ./ops
+COPY --from=builder /app/extensions_config.example.json ./extensions_config.example.json
 
 # Expose Gateway API port.
 EXPOSE 8001

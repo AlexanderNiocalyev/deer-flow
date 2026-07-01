@@ -333,12 +333,13 @@ async def get_current_user_from_request(request: Request):
     """
     state = getattr(request, "state", None)
     state_user = getattr(state, "user", None)
-    from app.gateway.auth_disabled import AUTH_SOURCE_AUTH_DISABLED, AUTH_SOURCE_INTERNAL, AUTH_SOURCE_SESSION
+    from app.gateway.auth_disabled import AUTH_SOURCE_AUTH_DISABLED, AUTH_SOURCE_EMBED, AUTH_SOURCE_INTERNAL, AUTH_SOURCE_SESSION
 
     if state_user is not None and getattr(state, "auth_source", None) in {
         AUTH_SOURCE_SESSION,
         AUTH_SOURCE_AUTH_DISABLED,
         AUTH_SOURCE_INTERNAL,
+        AUTH_SOURCE_EMBED,
     }:
         return state_user
 

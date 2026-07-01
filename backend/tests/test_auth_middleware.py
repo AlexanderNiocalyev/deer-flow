@@ -5,6 +5,7 @@ from starlette.testclient import TestClient
 
 from app.gateway.auth_middleware import AuthMiddleware, _is_public
 from app.gateway.csrf_middleware import CSRFMiddleware
+from app.gateway.embed_auth import EMBED_AUTH_HEADER_NAME, create_embed_token
 
 # ── _is_public unit tests ─────────────────────────────────────────────────
 
@@ -186,6 +187,23 @@ def _make_auth_csrf_app():
         return {"ok": True}
 
     return app
+
+
+def _embed_token(thread_id: str, *, user_id: str = "orpheus-user", secret: str = "embed-test-secret") -> str:
+    return create_embed_token(
+        {
+            "v": 1,
+            "iss": "orpheus",
+            "aud": "deerflow",
+            "sub": user_id,
+            "thread_id": thread_id,
+            "session_id": "agws_test",
+            "workspace_id": "workspace_test",
+            "iat": 1_700_000_000,
+            "exp": 4_000_000_000,
+        },
+        secret=secret,
+    )
 
 
 @pytest.fixture
@@ -382,6 +400,57 @@ def test_protected_post_with_internal_auth_header_passes():
     )
 
     assert res.status_code == 200
+
+
+def test_protected_path_with_embed_token_stamps_user(monkeypatch):
+    monkeypatch.setenv("DEERFLOW_EMBED_TOKEN_SECRET", "embed-test-secret")
+    client = TestClient(_make_app())
+
+    res = client.get(
+        "/api/current-user-from-dep",
+        headers={EMBED_AUTH_HEADER_NAME: _embed_token("abc", user_id="orpheus-user-123")},
+    )
+
+    assert res.status_code == 200
+    assert res.json() == {
+        "id": "orpheus-user-123",
+        "state_id": "orpheus-user-123",
+        "auth_source": "embed",
+        "context_user_id": "orpheus-user-123",
+    }
+
+
+def test_protected_path_rejects_embed_token_for_wrong_thread(monkeypatch):
+    monkeypatch.setenv("DEERFLOW_EMBED_TOKEN_SECRET", "embed-test-secret")
+    client = TestClient(_make_app())
+
+    res = client.post(
+        "/api/threads/abc/runs/stream",
+        headers={EMBED_AUTH_HEADER_NAME: _embed_token("other-thread")},
+    )
+
+    assert res.status_code == 401
+
+
+def test_protected_path_rejects_embed_token_with_invalid_timestamps(monkeypatch):
+    monkeypatch.setenv("DEERFLOW_EMBED_TOKEN_SECRET", "embed-test-secret")
+    client = TestClient(_make_app())
+    token = create_embed_token(
+        {
+            "v": 1,
+            "iss": "orpheus",
+            "aud": "deerflow",
+            "sub": "orpheus-user",
+            "thread_id": "abc",
+            "iat": "not-a-timestamp",
+            "exp": 4_000_000_000,
+        },
+        secret="embed-test-secret",
+    )
+
+    res = client.get("/api/threads/abc", headers={EMBED_AUTH_HEADER_NAME: token})
+
+    assert res.status_code == 401
 
 
 # ── Method matrix: PUT/DELETE/PATCH also protected ────────────────────────

@@ -395,6 +395,7 @@ async def run_agent(
         )
 
     finally:
+        final_artifacts: list[str] | None = None
         # Flush any buffered journal events and persist completion data
         if journal is not None:
             try:
@@ -409,18 +410,22 @@ async def run_agent(
             except Exception:
                 logger.warning("Failed to persist run completion for %s (non-fatal)", run_id, exc_info=True)
 
-        # Sync title from checkpoint to threads_meta.display_name
-        if checkpointer is not None and thread_store is not None:
+        # Sync title/artifacts from the final checkpoint.
+        if checkpointer is not None:
             try:
                 ckpt_config = {"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}}
                 ckpt_tuple = await checkpointer.aget_tuple(ckpt_config)
                 if ckpt_tuple is not None:
                     ckpt = getattr(ckpt_tuple, "checkpoint", {}) or {}
-                    title = ckpt.get("channel_values", {}).get("title")
-                    if title:
+                    channel_values = ckpt.get("channel_values", {})
+                    title = channel_values.get("title")
+                    artifacts = channel_values.get("artifacts")
+                    if isinstance(artifacts, list):
+                        final_artifacts = [path for path in artifacts if isinstance(path, str) and path.strip()]
+                    if title and thread_store is not None:
                         await thread_store.update_display_name(thread_id, title)
             except Exception:
-                logger.debug("Failed to sync title for thread %s (non-fatal)", thread_id)
+                logger.debug("Failed to sync checkpoint metadata for thread %s (non-fatal)", thread_id)
 
         # Update threads_meta status based on run outcome
         if thread_store is not None:
@@ -429,6 +434,14 @@ async def run_agent(
                 await thread_store.update_status(thread_id, final_status)
             except Exception:
                 logger.debug("Failed to update thread_meta status for %s (non-fatal)", thread_id)
+
+        if final_artifacts:
+            try:
+                from deerflow.integrations.orpheus_mirror import schedule_orpheus_mirror
+
+                schedule_orpheus_mirror(record, artifacts=final_artifacts)
+            except Exception:
+                logger.debug("Failed to schedule Orpheus artifact mirror for run %s", run_id, exc_info=True)
 
         await bridge.publish_end(run_id)
         asyncio.create_task(bridge.cleanup(run_id, delay=60))

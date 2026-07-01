@@ -15,6 +15,36 @@ Run `make config-upgrade` to merge new fields into your config.
 - Run `make config-upgrade` to auto-merge missing fields (your existing values are preserved, a `.bak` backup is created).
 - When changing the config schema, bump `config_version` in `config.example.yaml`.
 
+## Orpheus Embed Auth
+
+When DeerFlow Workspace is embedded inside Orpheus, configure the same HMAC
+secret in both services:
+
+```bash
+DEERFLOW_EMBED_TOKEN_SECRET=use-the-same-secret-in-orpheus
+```
+
+Orpheus opens `/embed/chats/{thread_id}?embed=1&embed_token=...`. The frontend
+stores the short-lived token in `sessionStorage`, strips it from the address bar,
+and sends it as `X-DeerFlow-Embed-Token` on Gateway/LangGraph requests. Gateway
+accepts the token as `auth_source=embed` only when the signature, expiry,
+issuer/audience, and requested thread id all match. CSRF double-submit checks are
+skipped only for requests carrying a valid embed token.
+
+For Orpheus to mirror DeerFlow run status, events, and artifacts, configure the
+Gateway with the Orpheus internal callback endpoint and a shared secret:
+
+```bash
+ORPHEUS_AGENT_WORKSPACE_CALLBACK_URL=https://<orpheus>/internal/agent-workspace/deerflow-callbacks
+ORPHEUS_AGENT_WORKSPACE_CALLBACK_TOKEN=use-the-same-token-in-orpheus
+# Optional, used to build clickable artifact URLs in Orpheus.
+DEERFLOW_PUBLIC_BASE_URL=https://<deerflow-frontend-or-gateway-origin>
+```
+
+The embed route receives `orpheus_session_id` and `orpheus_workspace_id` from
+Orpheus, forwards them in run metadata/context, and the Gateway callback client
+uses those values to update the matching Orpheus Agent Workspace session.
+
 ## Configuration Sections
 
 ### Models
@@ -274,7 +304,52 @@ When using Docker development (`make docker-start`), DeerFlow starts the `provis
 
 See [Provisioner Setup Guide](../../docker/provisioner/README.md) for detailed configuration, prerequisites, and troubleshooting.
 
-Choose between local execution or Docker-based isolation:
+**Vercel Sandbox Execution** (runs sandbox workspaces in Vercel Sandbox):
+```yaml
+sandbox:
+   use: deerflow.community.vercel_sandbox:VercelSandboxProvider
+   vercel_token: $VERCEL_TOKEN
+   vercel_project_id: $VERCEL_PROJECT_ID
+   # vercel_team_id: $VERCEL_TEAM_ID
+```
+
+Vercel Sandbox runs only the execution workspace: bash commands, file reads/writes, lightweight
+code execution, and optional preview ports. Keep DeerFlow Gateway, LangGraph runtime, frontend,
+memory, thread store, IM channels, and orchestration in the main DeerFlow service. DeerFlow stores
+its own deterministic per-thread sandbox id and a separate Vercel sandbox id in `runtime_bindings`
+so threads can resume persistent Vercel sandboxes across turns without coupling business session ids
+to provider resource ids. In production, set `database.backend` to `postgres` or `sqlite` and keep
+the default `vercel_record_store: auto` (or force `database`) so these mappings survive Cloud Run
+instance restarts and multi-instance scheduling. Without an initialized database, `auto` falls back
+to local JSON files for development only.
+
+Vercel does not mount DeerFlow's host thread directories. `VercelSandboxProvider` syncs existing
+workspace/uploads into the sandbox on acquire and mirrors writes under `/mnt/user-data/*` back to
+the host thread directory so artifacts and `present_files` continue to work. By default it stops
+the persistent Vercel sandbox after each agent run (`vercel_stop_on_release: true`), letting Vercel
+snapshot the session and reducing idle runtime cost.
+
+Common options:
+
+```yaml
+sandbox:
+  use: deerflow.community.vercel_sandbox:VercelSandboxProvider
+  vercel_token: $VERCEL_TOKEN
+  vercel_project_id: $VERCEL_PROJECT_ID
+  vercel_team_id: $VERCEL_TEAM_ID  # optional
+  vercel_runtime: python3.13
+  vercel_vcpus: 2
+  vercel_memory_mb: 4096           # must equal vercel_vcpus * 2048
+  vercel_timeout_ms: 3600000
+  vercel_ports: [3000]
+  vercel_stop_on_release: true
+  vercel_record_store: database     # production: database; local dev can use auto/file
+  vercel_environment:
+    NODE_ENV: production
+    API_KEY: $MY_API_KEY
+```
+
+Choose between local execution, Docker-based isolation, Kubernetes provisioner, or Vercel Sandbox:
 
 **Option 1: Local Sandbox** (default, simpler setup):
 ```yaml

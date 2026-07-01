@@ -1,0 +1,42 @@
+substitutions:
+  _BACKEND_IMAGE: deerflow-gateway
+  _FRONTEND_IMAGE: deerflow-frontend
+
+steps:
+  - name: gcr.io/cloud-builders/docker
+    id: build-backend
+    args:
+      - build
+      - -f
+      - backend/Dockerfile
+      - --build-arg
+      - UV_EXTRAS=postgres
+      - -t
+      - ${_BACKEND_IMAGE}
+      - .
+
+  - name: gcr.io/cloud-builders/docker
+    id: push-backend
+    args: [push, "${_BACKEND_IMAGE}"]
+    waitFor: [build-backend]
+
+  - name: gcr.io/cloud-builders/docker
+    id: build-frontend
+    args:
+      - build
+      - -f
+      - frontend/Dockerfile
+      - --target
+      - prod
+      - -t
+      - ${_FRONTEND_IMAGE}
+      - .
+
+  - name: gcr.io/cloud-builders/docker
+    id: push-frontend
+    args: [push, "${_FRONTEND_IMAGE}"]
+    waitFor: [build-frontend]
+
+images:
+  - "${_BACKEND_IMAGE}"
+  - "${_FRONTEND_IMAGE}"

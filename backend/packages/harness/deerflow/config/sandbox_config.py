@@ -38,6 +38,16 @@ class SandboxConfig(BaseModel):
         idle_timeout: Idle timeout in seconds before sandbox is released (default: 600 = 10 minutes). Set to 0 to disable.
         mounts: List of volume mounts to share directories with the container
         environment: Environment variables to inject into the container (values starting with $ are resolved from host env)
+
+    VercelSandboxProvider specific options:
+        vercel_token: Vercel API token, or `$ENV_VAR` reference
+        vercel_project_id: Vercel project id, or `$ENV_VAR` reference
+        vercel_team_id: Optional Vercel team id, or `$ENV_VAR` reference
+        vercel_runtime: Runtime name passed to Vercel Sandbox (default: python3.13)
+        vercel_vcpus: Vercel resource vCPU count (default: 2)
+        vercel_memory_mb: Vercel memory in MiB. Must equal vercel_vcpus * 2048.
+        vercel_stop_on_release: Stop persistent sandboxes after each agent run so Vercel can snapshot and idle.
+        vercel_record_store: Where to persist DeerFlow sandbox id -> Vercel sandbox id mappings (`auto`, `database`, or `file`).
     """
 
     use: str = Field(
@@ -75,6 +85,72 @@ class SandboxConfig(BaseModel):
     environment: dict[str, str] = Field(
         default_factory=dict,
         description="Environment variables to inject into the sandbox container. Values starting with $ will be resolved from host environment variables.",
+    )
+
+    vercel_token: str | None = Field(
+        default=None,
+        description="Vercel API token for VercelSandboxProvider. Values starting with $ are resolved from host environment variables.",
+    )
+    vercel_project_id: str | None = Field(
+        default=None,
+        description="Vercel project id for VercelSandboxProvider. Values starting with $ are resolved from host environment variables.",
+    )
+    vercel_team_id: str | None = Field(
+        default=None,
+        description="Optional Vercel team id for VercelSandboxProvider. Values starting with $ are resolved from host environment variables.",
+    )
+    vercel_runtime: str | None = Field(
+        default=None,
+        description="Runtime passed to Vercel Sandbox (default: python3.13).",
+    )
+    vercel_image: str | None = Field(
+        default=None,
+        description="Optional custom image passed to Vercel Sandbox.",
+    )
+    vercel_timeout_ms: int | None = Field(
+        default=None,
+        gt=0,
+        description="Vercel sandbox timeout in milliseconds (default: 3600000).",
+    )
+    vercel_vcpus: int | None = Field(
+        default=None,
+        gt=0,
+        description="Vercel sandbox vCPU count (default: 2). Vercel accepts 1 or even values.",
+    )
+    vercel_memory_mb: int | None = Field(
+        default=None,
+        gt=0,
+        description="Vercel sandbox memory in MiB. Must equal vercel_vcpus * 2048.",
+    )
+    vercel_ports: list[int] = Field(
+        default_factory=list,
+        description="Ports to expose from Vercel Sandbox for preview URLs.",
+    )
+    vercel_interactive: bool = Field(
+        default=False,
+        description="Whether to request an interactive Vercel sandbox session.",
+    )
+    vercel_environment: dict[str, str] = Field(
+        default_factory=dict,
+        description="Additional environment variables injected only into Vercel Sandbox. Values starting with $ are resolved from host environment variables.",
+    )
+    vercel_sync_max_file_bytes: int | None = Field(
+        default=None,
+        gt=0,
+        description="Maximum file size copied between host thread data and Vercel Sandbox (default: 100 MiB).",
+    )
+    vercel_stop_on_release: bool = Field(
+        default=True,
+        description="Stop the persistent Vercel sandbox after each agent run so it snapshots and stops accruing idle runtime.",
+    )
+    vercel_record_store: str | None = Field(
+        default=None,
+        description="Mapping store for VercelSandboxProvider: `auto` uses the app database when available and file JSON otherwise; `database` requires database.backend sqlite/postgres; `file` keeps local JSON records for development.",
+    )
+    vercel_record_claim_timeout_s: float | None = Field(
+        default=None,
+        gt=0,
+        description="Seconds to wait for another process to finish a DB-backed Vercel sandbox creation claim before failing acquire.",
     )
 
     bash_output_max_chars: int = Field(

@@ -888,7 +888,8 @@ safety_finish_reason:
 # ============================================================================
 # Sandbox Configuration
 # ============================================================================
-# Choose between local sandbox (direct execution) or Docker-based AIO sandbox
+# Choose between local sandbox, Docker-based AIO sandbox, Kubernetes provisioner,
+# or Vercel Sandbox.
 
 # Option 1: Local Sandbox (Default)
 # Executes commands directly on the host machine
@@ -999,6 +1000,34 @@ sandbox:
 #   provisioner_url: http://provisioner:8002
 #   # Note: provisioner-created Pods use the provisioner's SANDBOX_IMAGE
 #   # environment variable, not sandbox.image from this config file.
+
+# Option 4: Vercel Sandbox
+# Runs bash/file/code execution in Vercel Sandbox while DeerFlow Gateway,
+# LangGraph runtime, frontend, memory, and thread storage stay in your main
+# DeerFlow service. DeerFlow persists a per-thread mapping from its own sandbox
+# id to the Vercel sandbox id under the thread data directory.
+# sandbox:
+#   use: deerflow.community.vercel_sandbox:VercelSandboxProvider
+#   vercel_token: $VERCEL_TOKEN
+#   vercel_project_id: $VERCEL_PROJECT_ID
+#   # Optional when your project is under a team:
+#   # vercel_team_id: $VERCEL_TEAM_ID
+#
+#   # Vercel resource options. Vercel requires memory to equal vcpus * 2048.
+#   # vercel_runtime: python3.13
+#   # vercel_vcpus: 2
+#   # vercel_memory_mb: 4096
+#   # vercel_timeout_ms: 3600000
+#   # vercel_ports: [3000]
+#
+#   # Stop persistent Vercel sandboxes after each agent run so they snapshot and
+#   # stop accruing idle runtime. The next turn resumes by Vercel sandbox id.
+#   # vercel_stop_on_release: true
+#
+#   # Environment variables injected only into Vercel Sandbox.
+#   # vercel_environment:
+#   #   NODE_ENV: production
+#   #   API_KEY: $MY_API_KEY
 
 # ============================================================================
 # Subagents Configuration

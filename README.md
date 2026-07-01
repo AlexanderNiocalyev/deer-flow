@@ -325,6 +325,7 @@ DeerFlow supports multiple sandbox execution modes:
 - **Local Execution** (runs sandbox code directly on the host machine)
 - **Docker Execution** (runs sandbox code in isolated Docker containers)
 - **Docker Execution with Kubernetes** (runs sandbox code in Kubernetes pods via provisioner service)
+- **Vercel Sandbox Execution** (runs per-thread workspaces in Vercel Sandbox while DeerFlow services stay on your main host)
 
 For Docker development, service startup follows `config.yaml` sandbox mode. In Local/Docker modes, `provisioner` is not started.
 
@@ -432,6 +433,8 @@ Notes:
 - `assistant_id: lead_agent` calls the default LangGraph assistant directly.
 - If `assistant_id` is set to a custom agent name, DeerFlow still routes through `lead_agent` and injects that value as `agent_name`, so the custom agent's SOUL/config takes effect for IM channels.
 - IM channel workers call Gateway's LangGraph-compatible API internally and automatically attach process-local internal auth plus the CSRF cookie/header pair required for thread and run creation.
+- Orpheus iframe embeds can use `DEERFLOW_EMBED_TOKEN_SECRET` to sign short-lived `/embed/chats/{thread_id}` access tokens; Gateway accepts `X-DeerFlow-Embed-Token` only for the token-bound thread.
+- Set `ORPHEUS_AGENT_WORKSPACE_CALLBACK_URL` and `ORPHEUS_AGENT_WORKSPACE_CALLBACK_TOKEN` when DeerFlow should mirror run state, lifecycle events, and artifact paths back into Orpheus Agent Workspace.
 
 Set the corresponding API keys in your `.env` file:
 
@@ -651,7 +654,7 @@ DeerFlow doesn't just *talk* about doing things. It has its own computer.
 
 Each task gets its own execution environment with a full filesystem view — skills, workspace, uploads, outputs. The agent reads, writes, and edits files. It can view images and, when configured safely, execute shell commands.
 
-With `AioSandboxProvider`, shell execution runs inside isolated containers. With `LocalSandboxProvider`, file tools still map to per-thread directories on the host, but host `bash` is disabled by default because it is not a secure isolation boundary. Re-enable host bash only for fully trusted local workflows. Host bash commands have a wall-clock timeout, and long-lived processes should be started in the background with output redirected to a workspace log.
+With `AioSandboxProvider`, shell execution runs inside isolated containers. With `VercelSandboxProvider`, shell execution and file tools run in Vercel Sandbox, while DeerFlow persists sandbox bindings in the app database when available and mirrors `/mnt/user-data/*` writes back to the host thread directory so artifacts remain available to the app. With `LocalSandboxProvider`, file tools still map to per-thread directories on the host, but host `bash` is disabled by default because it is not a secure isolation boundary. Re-enable host bash only for fully trusted local workflows. Host bash commands have a wall-clock timeout, and long-lived processes should be started in the background with output redirected to a workspace log.
 
 This is the difference between a chatbot with tool access and an agent with an actual execution environment.
 

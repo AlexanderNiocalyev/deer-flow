@@ -1,4 +1,5 @@
 import { buildLoginUrl } from "@/core/auth/types";
+import { hasEmbedToken, withEmbedAuthHeader } from "@/core/embed-auth";
 
 /** HTTP methods that the gateway's CSRFMiddleware checks. */
 export type StateChangingMethod = "POST" | "PUT" | "DELETE" | "PATCH";
@@ -61,7 +62,7 @@ export async function fetch(
 
   // Inject CSRF for state-changing methods. GET/HEAD/OPTIONS/TRACE skip
   // it to mirror the gateway's ``should_check_csrf`` logic exactly.
-  let headers = init?.headers;
+  let headers: HeadersInit | undefined = withEmbedAuthHeader(init?.headers);
   if (isStateChangingMethod(init?.method ?? "GET")) {
     const token = readCsrfCookie();
     if (token) {
@@ -81,6 +82,9 @@ export async function fetch(
   });
 
   if (res.status === 401) {
+    if (hasEmbedToken()) {
+      throw new Error("Unauthorized embed request");
+    }
     window.location.href = buildLoginUrl(window.location.pathname);
     throw new Error("Unauthorized");
   }
