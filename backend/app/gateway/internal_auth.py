@@ -18,7 +18,7 @@ INTERNAL_SYSTEM_ROLE = "internal"
 def _load_internal_auth_token() -> str:
     token = os.environ.get(INTERNAL_AUTH_ENV_VAR)
     if token:
-        return token
+        return token.strip()
     return secrets.token_urlsafe(32)
 
 

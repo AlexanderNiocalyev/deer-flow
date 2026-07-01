@@ -62,7 +62,12 @@ class SandboxMiddleware(AgentMiddleware[SandboxMiddlewareState]):
         return sandbox_id
 
     async def _release_sandbox_async(self, sandbox_id: str) -> None:
-        await asyncio.to_thread(get_sandbox_provider().release, sandbox_id)
+        provider = get_sandbox_provider()
+        release_async = getattr(provider, "release_async", None)
+        if callable(release_async):
+            await release_async(sandbox_id)
+            return
+        await asyncio.to_thread(provider.release, sandbox_id)
 
     @override
     def before_agent(self, state: SandboxMiddlewareState, runtime: Runtime) -> dict | None:

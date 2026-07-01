@@ -93,6 +93,10 @@ class _AsyncOnlyProvider(SandboxProvider):
         return None
 
     def release(self, sandbox_id: str) -> None:
+        del sandbox_id
+        raise AssertionError("async middleware should not call sync release")
+
+    async def release_async(self, sandbox_id: str) -> None:
         self.released_ids.append(sandbox_id)
         return None
 
@@ -203,20 +207,12 @@ async def test_default_lazy_tool_acquisition_uses_async_provider() -> None:
         ({}, Runtime(context={"sandbox_id": "context-sandbox"}), "context-sandbox"),
     ],
 )
-async def test_aafter_agent_releases_sandbox_off_thread(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_aafter_agent_uses_async_provider_release(
     state: dict,
     runtime: Runtime,
     expected_sandbox_id: str,
 ) -> None:
     provider = _AsyncOnlyProvider()
-    to_thread_calls: list[tuple[object, tuple[object, ...]]] = []
-
-    async def fake_to_thread(func, /, *args):
-        to_thread_calls.append((func, args))
-        return func(*args)
-
-    monkeypatch.setattr(asyncio, "to_thread", fake_to_thread)
     set_sandbox_provider(provider)
     try:
         result = await SandboxMiddleware().aafter_agent(state, runtime)
@@ -225,7 +221,6 @@ async def test_aafter_agent_releases_sandbox_off_thread(
 
     assert result is None
     assert provider.released_ids == [expected_sandbox_id]
-    assert to_thread_calls == [(provider.release, (expected_sandbox_id,))]
 
 
 @pytest.mark.anyio

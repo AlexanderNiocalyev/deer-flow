@@ -21,6 +21,21 @@ def test_internal_auth_uses_shared_env_token(monkeypatch):
         importlib.reload(reloaded)
 
 
+def test_internal_auth_strips_secret_manager_newline(monkeypatch):
+    import app.gateway.internal_auth as internal_auth
+
+    monkeypatch.setenv("DEER_FLOW_INTERNAL_AUTH_TOKEN", "shared-token\n")
+    reloaded = importlib.reload(internal_auth)
+    try:
+        headers = reloaded.create_internal_auth_headers()
+
+        assert headers[reloaded.INTERNAL_AUTH_HEADER_NAME] == "shared-token"
+        assert reloaded.is_valid_internal_auth_token("shared-token") is True
+    finally:
+        monkeypatch.delenv("DEER_FLOW_INTERNAL_AUTH_TOKEN", raising=False)
+        importlib.reload(reloaded)
+
+
 def test_internal_auth_generates_process_local_fallback(monkeypatch):
     import app.gateway.internal_auth as internal_auth
 
