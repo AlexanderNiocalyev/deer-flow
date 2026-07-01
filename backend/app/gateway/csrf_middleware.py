@@ -15,6 +15,7 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp
 
 from app.gateway.auth_disabled import is_auth_disabled
+from app.gateway.embed_auth import EMBED_AUTH_HEADER_NAME, EmbedTokenError, verify_embed_request
 
 CSRF_COOKIE_NAME = "csrf_token"
 CSRF_HEADER_NAME = "X-CSRF-Token"
@@ -192,6 +193,16 @@ class CSRFMiddleware(BaseHTTPMiddleware):
             )
 
         if should_check_csrf(request) and not _is_auth:
+            if request.headers.get(EMBED_AUTH_HEADER_NAME):
+                try:
+                    verify_embed_request(request)
+                    return await call_next(request)
+                except EmbedTokenError:
+                    return JSONResponse(
+                        status_code=403,
+                        content={"detail": "Embed token invalid."},
+                    )
+
             cookie_token = request.cookies.get(CSRF_COOKIE_NAME)
             header_token = request.headers.get(CSRF_HEADER_NAME)
 

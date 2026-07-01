@@ -3,6 +3,7 @@
 import { Client as LangGraphClient } from "@langchain/langgraph-sdk/client";
 
 import { getLangGraphBaseURL } from "../config";
+import { withEmbedAuthHeader } from "../embed-auth";
 import { isStaticWebsiteOnly } from "../static-mode";
 import {
   loadStaticDemoThread,
@@ -26,12 +27,13 @@ import { sanitizeRunStreamOptions } from "./stream-mode";
  * the contract stays in lockstep.
  */
 function injectCsrfHeader(_url: URL, init: RequestInit): RequestInit {
+  let headers: HeadersInit | undefined = withEmbedAuthHeader(init.headers);
   if (!isStateChangingMethod(init.method ?? "GET")) {
-    return init;
+    return { ...init, headers };
   }
   const token = readCsrfCookie();
-  if (!token) return init;
-  const headers = new Headers(init.headers);
+  if (!token) return { ...init, headers };
+  headers = new Headers(headers);
   if (!headers.has("X-CSRF-Token")) {
     headers.set("X-CSRF-Token", token);
   }

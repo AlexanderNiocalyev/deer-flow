@@ -15,6 +15,22 @@ Run `make config-upgrade` to merge new fields into your config.
 - Run `make config-upgrade` to auto-merge missing fields (your existing values are preserved, a `.bak` backup is created).
 - When changing the config schema, bump `config_version` in `config.example.yaml`.
 
+## Orpheus Embed Auth
+
+When DeerFlow Workspace is embedded inside Orpheus, configure the same HMAC
+secret in both services:
+
+```bash
+DEERFLOW_EMBED_TOKEN_SECRET=use-the-same-secret-in-orpheus
+```
+
+Orpheus opens `/embed/chats/{thread_id}?embed=1&embed_token=...`. The frontend
+stores the short-lived token in `sessionStorage`, strips it from the address bar,
+and sends it as `X-DeerFlow-Embed-Token` on Gateway/LangGraph requests. Gateway
+accepts the token as `auth_source=embed` only when the signature, expiry,
+issuer/audience, and requested thread id all match. CSRF double-submit checks are
+skipped only for requests carrying a valid embed token.
+
 ## Configuration Sections
 
 ### Models
