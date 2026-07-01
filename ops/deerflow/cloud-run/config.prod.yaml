@@ -1,0 +1,127 @@
+# DeerFlow Cloud Run production config for Orpheus native workspace mode.
+#
+# Secrets are injected as environment variables by deploy-cloud-run.sh. Do not
+# replace $... placeholders with literal secret values in this file.
+config_version: 15
+log_level: info
+
+token_usage:
+  enabled: true
+
+models:
+  - name: gpt-5-responses
+    display_name: GPT-5
+    use: langchain_openai:ChatOpenAI
+    model: gpt-5
+    api_key: $OPENAI_API_KEY
+    request_timeout: 600.0
+    max_retries: 2
+    use_responses_api: true
+    output_version: responses/v1
+    supports_vision: true
+    supports_thinking: true
+
+tool_groups:
+  - name: web
+  - name: file:read
+  - name: file:write
+  - name: bash
+
+tools:
+  - name: web_search
+    group: web
+    use: deerflow.community.ddg_search.tools:web_search_tool
+    max_results: 5
+
+  - name: web_fetch
+    group: web
+    use: deerflow.community.jina_ai.tools:web_fetch_tool
+    timeout: 10
+
+  - name: image_search
+    group: web
+    use: deerflow.community.image_search.tools:image_search_tool
+    max_results: 5
+
+  - name: ls
+    group: file:read
+    use: deerflow.sandbox.tools:ls_tool
+
+  - name: read_file
+    group: file:read
+    use: deerflow.sandbox.tools:read_file_tool
+
+  - name: glob
+    group: file:read
+    use: deerflow.sandbox.tools:glob_tool
+    max_results: 200
+
+  - name: grep
+    group: file:read
+    use: deerflow.sandbox.tools:grep_tool
+    max_results: 100
+
+  - name: write_file
+    group: file:write
+    use: deerflow.sandbox.tools:write_file_tool
+
+  - name: str_replace
+    group: file:write
+    use: deerflow.sandbox.tools:str_replace_tool
+
+  - name: bash
+    group: bash
+    use: deerflow.sandbox.tools:bash_tool
+
+tool_search:
+  enabled: false
+  max_file_size: 52428800
+  max_total_size: 104857600
+  auto_convert_documents: false
+  pdf_converter: auto
+
+database:
+  backend: postgres
+  postgres_url: $DATABASE_URL
+  pool_size: 5
+
+run_events:
+  backend: db
+  max_trace_content: 10240
+  track_token_usage: true
+
+memory:
+  enabled: true
+  storage_path: memory.json
+  debounce_seconds: 30
+  model_name: null
+  max_facts: 100
+  fact_confidence_threshold: 0.7
+  injection_enabled: true
+  max_injection_tokens: 2000
+  token_counting: char
+
+agents_api:
+  enabled: false
+
+skill_evolution:
+  enabled: false
+  moderation_model_name: null
+
+sandbox:
+  use: deerflow.community.vercel_sandbox:VercelSandboxProvider
+  vercel_token: $VERCEL_TOKEN
+  vercel_project_id: $VERCEL_PROJECT_ID
+  vercel_team_id: $VERCEL_TEAM_ID
+  vercel_runtime: python3.13
+  vercel_vcpus: 2
+  vercel_memory_mb: 4096
+  vercel_timeout_ms: 3600000
+  vercel_ports: [3000, 5173, 8000]
+  vercel_stop_on_release: true
+  vercel_record_store: database
+  vercel_record_claim_timeout_s: 60
+  bash_output_max_chars: 20000
+  read_file_output_max_chars: 50000
+  ls_output_max_chars: 20000
+  bash_command_timeout: 600
