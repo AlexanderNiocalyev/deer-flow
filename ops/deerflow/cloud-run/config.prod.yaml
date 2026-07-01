@@ -116,7 +116,8 @@ sandbox:
   vercel_runtime: python3.13
   vercel_vcpus: 2
   vercel_memory_mb: 4096
-  vercel_timeout_ms: 3600000
+  # Hobby plans cap sandbox timeout at 45 minutes; Pro can raise this later.
+  vercel_timeout_ms: 2700000
   vercel_ports: [3000, 5173, 8000]
   vercel_stop_on_release: true
   vercel_record_store: database
