@@ -33,6 +33,7 @@ DeerFlow is a LangGraph-based AI super agent with sandbox execution, persistent 
 - `/api/langgraph/*` → Gateway LangGraph-compatible API - agent interactions, threads, streaming
 - `/api/*` (other) → Gateway API - models, MCP, skills, memory, artifacts, uploads, thread-local cleanup
 - `/` (non-API) → Frontend - Next.js web interface
+- `/embed/chats/{thread_id}` → Frontend iframe route for Orpheus; API calls authenticate with `X-DeerFlow-Embed-Token`
 
 ---
 

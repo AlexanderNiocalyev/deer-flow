@@ -4,6 +4,24 @@ from fastapi import FastAPI
 from starlette.testclient import TestClient
 
 from app.gateway.csrf_middleware import CSRFMiddleware
+from app.gateway.embed_auth import EMBED_AUTH_HEADER_NAME, create_embed_token
+
+
+def _embed_token(thread_id: str, *, secret: str = "embed-test-secret") -> str:
+    return create_embed_token(
+        {
+            "v": 1,
+            "iss": "orpheus",
+            "aud": "deerflow",
+            "sub": "orpheus-user",
+            "thread_id": thread_id,
+            "session_id": "agws_test",
+            "workspace_id": "workspace_test",
+            "iat": 1_700_000_000,
+            "exp": 4_000_000_000,
+        },
+        secret=secret,
+    )
 
 
 def _make_app() -> FastAPI:
@@ -217,6 +235,37 @@ def test_non_auth_mutation_allows_valid_double_submit_token():
     )
 
     assert response.status_code == 200
+
+
+def test_non_auth_mutation_allows_valid_embed_token_without_csrf(monkeypatch):
+    monkeypatch.setenv("DEERFLOW_EMBED_TOKEN_SECRET", "embed-test-secret")
+    client = TestClient(_make_app(), base_url="https://deerflow.example")
+
+    response = client.post(
+        "/api/threads/abc/runs/stream",
+        headers={
+            "Origin": "https://deerflow.example",
+            EMBED_AUTH_HEADER_NAME: _embed_token("abc"),
+        },
+    )
+
+    assert response.status_code == 200
+
+
+def test_non_auth_mutation_rejects_invalid_embed_token(monkeypatch):
+    monkeypatch.setenv("DEERFLOW_EMBED_TOKEN_SECRET", "embed-test-secret")
+    client = TestClient(_make_app(), base_url="https://deerflow.example")
+
+    response = client.post(
+        "/api/threads/abc/runs/stream",
+        headers={
+            "Origin": "https://deerflow.example",
+            EMBED_AUTH_HEADER_NAME: _embed_token("other-thread"),
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Embed token invalid."
 
 
 def test_non_auth_mutation_rejects_mismatched_double_submit_token():

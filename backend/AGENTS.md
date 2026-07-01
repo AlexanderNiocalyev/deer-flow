@@ -274,6 +274,8 @@ FastAPI application on port 8001 with health check at `GET /health`. Set `GATEWA
 
 CORS is same-origin by default when requests enter through nginx on port 2026. Split-origin or port-forwarded browser clients must opt in with `GATEWAY_CORS_ORIGINS` (comma-separated exact origins); Gateway `CORSMiddleware` and `CSRFMiddleware` both read that variable so browser CORS and auth-origin checks stay aligned.
 
+Orpheus embeds use `DEERFLOW_EMBED_TOKEN_SECRET` and the `X-DeerFlow-Embed-Token` header. `app/gateway/embed_auth.py` verifies the short-lived HMAC token, binds it to a single thread id, and lets `AuthMiddleware` stamp an `auth_source="embed"` user context. `CSRFMiddleware` skips double-submit CSRF only after that same token verifies for the request path.
+
 **Routers**:
 
 | Router | Endpoints |

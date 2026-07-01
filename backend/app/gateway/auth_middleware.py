@@ -19,12 +19,14 @@ from starlette.types import ASGIApp
 from app.gateway.auth.errors import AuthErrorCode, AuthErrorResponse
 from app.gateway.auth_disabled import (
     AUTH_SOURCE_AUTH_DISABLED,
+    AUTH_SOURCE_EMBED,
     AUTH_SOURCE_INTERNAL,
     AUTH_SOURCE_SESSION,
     get_auth_disabled_user,
     is_auth_disabled,
 )
 from app.gateway.authz import _ALL_PERMISSIONS, AuthContext
+from app.gateway.embed_auth import EMBED_AUTH_HEADER_NAME, EmbedTokenError, get_embed_user_from_request
 from app.gateway.internal_auth import INTERNAL_AUTH_HEADER_NAME, get_internal_user, is_valid_internal_auth_token
 from deerflow.runtime.user_context import reset_current_user, set_current_user
 
@@ -92,11 +94,18 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         auth_source = AUTH_SOURCE_SESSION
         access_token = request.cookies.get("access_token")
+        embed_token = request.headers.get(EMBED_AUTH_HEADER_NAME)
 
         # Non-public path: require session cookie
         if internal_user is not None:
             user = internal_user
             auth_source = AUTH_SOURCE_INTERNAL
+        elif embed_token:
+            try:
+                user = get_embed_user_from_request(request)
+            except EmbedTokenError as exc:
+                return JSONResponse(status_code=401, content={"detail": str(exc)})
+            auth_source = AUTH_SOURCE_EMBED
         elif access_token:
             # Strict JWT validation: reject junk/expired tokens with 401
             # right here instead of silently passing through. This closes
